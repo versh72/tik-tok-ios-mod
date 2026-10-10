@@ -137,9 +137,12 @@ console.log('\n== 6. Build pipeline ==');
 const makefile = readFileSync(join(ROOT, 'Tweak/Makefile'), 'utf8');
 check('theos Makefile declares the target',
   makefile.includes('TWEAK_NAME = TikTokRegion'));
-check('theos Makefile covers arm64 and arm64e',
-  makefile.includes('arm64') && makefile.includes('arm64e'),
-  'modern iPhones are arm64e; arm64-only would not load on A12+');
+check('theos Makefile builds arm64 for the App Store path',
+  /ARCHS\s*=\s*arm64\b/.test(makefile) && !/ARCHS\s*=\s*arm64\s+arm64e/.test(makefile),
+  'insert_dylib path: an App Store IPA is arm64 even on arm64e devices');
+check('theos Makefile explains the arm64 vs arm64e choice',
+  makefile.includes('arm64e'),
+  'arm64e belongs to the jailbreak path; the two must not be mixed');
 check('theos Makefile links Security',
   makefile.includes('Security'),
   'SecTrust handling needs it');
