@@ -1,0 +1,21 @@
+[package]
+name = "tiktok-region-installer"
+version = "1.0.0"
+edition = "2021"
+
+# Лицензия: GPL-3.0, как и остальной проект. Зависимость insert-dylib
+# распространяется под MIT — она совместима с GPL-3.0.
+license = "GPL-3.0-only"
+
+[[bin]]
+name = "tiktok-region-installer"
+path = "src/main.rs"
+
+[dependencies]
+# Работа с ZIP. На Windows встроенного нет, а IPA — это обычный ZIP.
+zip = { version = "0.6", default-features = false, features = ["deflate"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true

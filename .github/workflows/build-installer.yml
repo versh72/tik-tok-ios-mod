@@ -1,0 +1,81 @@
+name: Сборка установщика для Windows
+
+# Зачем этот файл
+# ----------------
+# Пользователю не должно приходиться ставить Rust, insert_dylib и разбираться
+# с командной строкой. Здесь собирается один .exe, который делает всю работу
+# по вставке библиотеки в перепакованный IPA.
+#
+# Всё происходит на macOS-раннере, а отдаётся готовая программа под Windows.
+# Пользователю нужен только этот файл и перепакованный IPA.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'Tools/patcher/**'
+      - '.github/workflows/build-installer.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Забрать исходники
+        uses: actions/checkout@v4
+
+      # insert-dylib: вставка LC_LOAD_DYLIB в Mach-O. Написан на Rust,
+      # работает на всех трёх платформах. Лицензия MIT — совместима с GPL-3.0.
+      - name: Поставить Rust с поддержкой Windows
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Собрать insert-dylib под Windows
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/hookforge/insert-dylib.git /tmp/insert-dylib
+          cd /tmp/insert-dylib
+          rustup target add x86_64-pc-windows-msvc
+          cargo build --release --target x86_64-pc-windows-msvc
+          ls -lh target/x86_64-pc-windows-msvc/release/
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          cp target/x86_64-pc-windows-msvc/release/*.exe "$GITHUB_WORKSPACE/out/"
+
+      - name: Собрать обёртку установщика
+        # Небольшая программа, которая делает всю работу за пользователя:
+        # проверяет шифрование, распаковывает IPA, вставляет библиотеку,
+        # кладёт её внутрь и собирает обратно.
+        run: |
+          set -euo pipefail
+          mkdir -p out/patcher/src
+          cp Tools/patcher/Cargo.toml out/patcher/
+          cp Tools/patcher/src/main.rs out/patcher/src/
+          cd out/patcher
+          cargo build --release --target x86_64-pc-windows-msvc
+          cp target/x86_64-pc-windows-msvc/release/*.exe "$GITHUB_WORKSPACE/out/"
+          ls -lh "$GITHUB_WORKSPACE/out"
+
+      - name: Собрать всё в один архив
+        run: |
+          set -euo pipefail
+          cd out
+          cp ../LICENSE . 2>/dev/null || true
+          # insert-dylib лежит рядом: обёртка вызывает его сама,
+          # пользователю не нужно знать, что он существует.
+          zip -qry "$GITHUB_WORKSPACE/tiktok-region-installer-windows.zip" .
+          cd "$GITHUB_WORKSPACE"
+          ls -lh tiktok-region-installer-windows.zip
+
+      - name: Отдать установщик
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-windows
+          path: tiktok-region-installer-windows.zip
+          retention-days: 90
+          if-no-files-found: error
