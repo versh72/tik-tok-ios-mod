@@ -56,7 +56,13 @@ typedef void *dispatch_once_t;
 
 /* ── Корневой класс ────────────────────────────────────────────────────── */
 
-@interface NSObject
+/* Протокол NSObject нужен для NSObject<UIApplicationDelegate> и других
+   конструкций вида Class<Proto>. Настоящий Foundation объявляет и
+   класс, и протокол с таким же именем. */
+@protocol NSObject
+@end
+
+@interface NSObject <NSObject>
 + (instancetype)alloc;
 + (instancetype)dictionary;
 - (instancetype)init;
@@ -126,10 +132,28 @@ extern NSString *NSStringFromSelector(SEL aSelector);
 - (NSString *)pathForResource:(NSString *)name ofType:(NSString *)ext;
 @end
 
+@interface NSError : NSObject
+@property (readonly) NSInteger code;
+@property (readonly, copy) NSString *domain;
+@property (readonly, copy) NSString *localizedDescription;
+@end
+
+/* NSNumber нужен для boxed-литералов (@YES, @1). */
+@interface NSNumber : NSObject
++ (NSNumber *)numberWithBool:(BOOL)value;
++ (NSNumber *)numberWithInt:(int)value;
++ (NSNumber *)numberWithInteger:(NSInteger)value;
+@end
+
 @interface NSFileManager : NSObject
 + (NSFileManager *)defaultManager;
 - (BOOL)fileExistsAtPath:(NSString *)path;
+- (BOOL)removeItemAtPath:(NSString *)path error:(NSError **)error;
+- (BOOL)copyItemAtPath:(NSString *)src toPath:(NSString *)dst error:(NSError **)error;
 @end
+
+extern NSString *NSTemporaryDirectory(void);
+extern NSString *NSHomeDirectory(void);
 
 /* ── ObjC runtime ──────────────────────────────────────────────────────── */
 

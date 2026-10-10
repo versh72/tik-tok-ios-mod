@@ -26,4 +26,12 @@ extern unsigned method_getNumberOfArguments(Method m);
 extern Class object_getClass(id obj);
 extern IMP imp_implementationWithBlock(void *block);
 
+/* Создание класса в рантайме — нужно Harness, чтобы зарегистрировать
+   класс с тем именем, которое ищет dylib через NSClassFromString. */
+extern Class objc_allocateClassPair(Class superclass, const char *name,
+                                    size_t extraBytes);
+extern void objc_registerClassPair(Class cls);
+extern BOOL class_addMethod(Class cls, SEL name, IMP imp, const char *types);
+extern IMP class_getMethodImplementation(Class cls, SEL name);
+
 #endif /* OBJC_RUNTIME_SHIM_H */
