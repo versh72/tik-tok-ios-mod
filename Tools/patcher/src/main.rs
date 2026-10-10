@@ -110,7 +110,7 @@ fn main() {
         ),
     };
 
-    let out = run(device_tool, &[]);
+    let (out, _) = run(device_tool, &[]);
     // Успех — это строка вида "d3a4...", начинающаяся с 40 нулей при
     // отсутствии устройств. Любой непустой вывод означает, что телефон найден.
     let found = out
@@ -229,8 +229,7 @@ fn main() {
     args.push(output.to_string_lossy().to_string());
     args.push(input.to_string_lossy().to_string());
 
-    let log = run(zsign, &args);
-    let code = run_code(zsign, &args);
+    let (log, code) = run_owned(zsign, args);
 
     if code != 0 || !output.exists() {
         println!("{}", log);
@@ -251,8 +250,7 @@ fn main() {
         ),
     };
 
-    let log = run(installer, &["-i", &output.to_string_lossy()]);
-    let code = run_code(installer, &["-i", &output.to_string_lossy()]);
+    let (log, code) = run_owned(installer, vec!["-i".into(), output.to_string_lossy().to_string()]);
 
     line();
     if code == 0 {
@@ -271,26 +269,28 @@ fn main() {
     pause();
 }
 
-fn run(program: &Path, args: &[&str]) -> String {
-    Command::new(program)
-        .args(args)
-        .output()
-        .map(|o| {
-            format!(
+/// Запускает программу и возвращает (вывод, код возврата).
+///
+/// Раньше вывод и код возврата брались двумя отдельными запусками:
+/// программа выполнялась дважды, а для zsign это означало двойную
+/// подпись и лишние секунды.
+fn run(program: &Path, args: &[&str]) -> (String, i32) {
+    let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    run_owned(program, owned)
+}
+
+fn run_owned(program: &Path, args: Vec<String>) -> (String, i32) {
+    match Command::new(program).args(&args).output() {
+        Ok(o) => {
+            let text = format!(
                 "{}{}",
                 String::from_utf8_lossy(&o.stdout),
                 String::from_utf8_lossy(&o.stderr)
-            )
-        })
-        .unwrap_or_else(|e| format!("не удалось запустить: {}", e))
-}
-
-fn run_code(program: &Path, args: &[&str]) -> i32 {
-    Command::new(program)
-        .args(args)
-        .output()
-        .map(|o| o.status.code().unwrap_or(-1))
-        .unwrap_or(-1)
+            );
+            (text, o.status.code().unwrap_or(-1))
+        }
+        Err(e) => (format!("не удалось запустить: {}", e), -1),
+    }
 }
 
 /// Спрашивает пароль от сертификата, только если он рядом есть.
