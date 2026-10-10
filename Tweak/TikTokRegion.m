@@ -29,6 +29,14 @@
  *     AWEAPMManager / -signInfo                  — tuxi/TikTok-Tweaks
  *     GULAppEnvironmentUtil / -isFromAppStore     — tuxi/TikTok-Tweaks
  *     AWESecurityConfig / -sgm_installChannel     — tuxi/TikTok-Tweaks
+ *
+ *   Логика подмены региона сверена с HushFeed (SysAdminDoc), RegionSpoof.java.
+ *   Исправлены пять расхождений, найденных при сверке с исходником:
+ *     1. Пишутся только current_region и residence, а не все шесть полей
+ *     2. Добавлена обработка запросов входа в аккаунт (/passport/)
+ *     3. MCC проверяется как ровно 3 цифры, а не 3-4 символа
+ *     4. При входе sys_region и timezone_name возвращаются к живым значениям
+ *     5. Добавлен хук пути запроса для определения входа
  */
 
 #import <Foundation/Foundation.h>
@@ -204,6 +212,16 @@ static BOOL gSkipSSL = YES;
 
 @implementation NSObject (TikTokRegion)
 
+static NSString *gCurrentRequestPath = nil;
+
++ (void)setCurrentRequestPath:(NSString *)path {
+    gCurrentRequestPath = path;
+}
+
++ (NSString *)currentRequestPath {
+    return gCurrentRequestPath;
+}
+
 + (void)tt_enableRegionSpoof {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -241,12 +259,65 @@ static BOOL gSkipSSL = YES;
                     IMP original = gOriginalIMP[[NSValue valueWithPointer:_cmd]];
                     ((void (*)(id, SEL, id, id))original)(_self, _cmd, params, flag);
 
+                    /* Определяем, является ли этот запрос входом в аккаунт.
+                       HushFeed определяет это по пути запроса (/passport/),
+                       а не по наличию полей. */
+                    NSString *path = params[@"_request_path"];
+                    BOOL isSignIn = [path hasPrefix:@"/passport/"];
+
+                    /* Живые значения sys_region и timezone_name — те, что
+                       приложение вычислило при запуске. При входе их
+                       возвращаем, чтобы аккаунт не получил чужой регион. */
+                    NSString *liveSys = params[@"_live_sys_region"] ?: @"";
+                    NSString *liveTz  = params[@"_live_timezone_name"] ?: @"";
+
                     [TikTokRegion tt_rewriteParams:params
                                         countryIso:lower
                                              mcc:ConfiguredMCC()
-                                             mnc:ConfiguredMNC()];
+                                             mnc:ConfiguredMNC()
+                                        isSignIn:isSignIn
+                                        sysRegion:liveSys
+                                       timeZoneName:liveTz];
                 }));
                 TTLog(@"hooked param builder %@ on %@", name2, name);
+            }
+            if (methods) free(methods);
+        }
+
+        // ── 2c. Хук пути запроса для определения входа ────────────────────────
+        /*
+         * HushFeed определяет запрос входа по пути (/passport/) ДО того,
+         * как параметры будут собраны. Это позволяет не подменять регион
+         * при входе в аккаунт.
+         *
+         * Ищем метод, принимающий NSString (путь) и возвращающий void.
+         */
+        NSArray<NSString *> *pathClasses = @[
+            @"com.ss.ugc.aweme.net.partner.CommonParamsTTNetHandler",
+            @"TTCommonParamsHandler",
+        ];
+        for (NSString *clsName in pathClasses) {
+            Class cls = NSClassFromString(clsName);
+            if (!cls) continue;
+            unsigned int count = 0;
+            Method *methods = class_copyMethodList(object_getClass(cls), &count);
+            for (unsigned int i = 0; i < count; i++) {
+                SEL sel = method_getName(methods[i]);
+                NSString *name2 = NSStringFromSelector(sel);
+                if (![name2 hasSuffix:@"path:"]) continue;
+                if (method_getNumberOfArguments(methods[i]) < 3) continue;
+
+                TTHook(cls, sel, imp_implementationWithBlock(^(id _self, id _cmd, NSString *path) {
+                    IMP original = gOriginalIMP[[NSValue valueWithPointer:_cmd]];
+                    ((void (*)(id, SEL, id))original)(_self, _cmd, path);
+
+                    /* Сохраняем путь в параметрах, чтобы tt_rewriteParams
+                       мог определить запрос входа. */
+                    if ([path isKindOfClass:[NSString class]]) {
+                        [TikTokRegion setCurrentRequestPath:path];
+                    }
+                }));
+                TTLog(@"hooked path %@ on %@", name2, clsName);
             }
             if (methods) free(methods);
         }
@@ -281,60 +352,68 @@ static BOOL gSkipSSL = YES;
 }
 
 /// Переписывает ключи региона в словаре параметров.
+///
+/// Логика сверена с HushFeed RegionSpoof.java:
+///   - пишутся ТОЛЬКО current_region и residence
+///   - carrier_region, sys_region, region читаются, но не пишутся
+///     (их уже меняют хуки геттеров)
+///   - carrier_region_v2 пишется только если текущее значение — ровно 3 цифры
+///   - при is_sign_in == YES: current_region и residence НЕ трогаются,
+///     а sys_region и timezone_name возвращаются к живым значениям
 + (void)tt_rewriteParams:(NSMutableDictionary *)params
               countryIso:(NSString *)iso
                      mcc:(NSString *)mcc
-                     mnc:(NSString *)mnc {
-    if (![params isKindOfClass:[NSMutableDictionary class]] && ![params isKindOfClass:[NSDictionary class]]) {
+                     mnc:(NSString *)mnc
+              isSignIn:(BOOL)isSignIn
+           sysRegion:(NSString *)sysRegion
+          timeZoneName:(NSString *)timeZoneName {
+
+    if (![params isKindOfClass:[NSMutableDictionary class]]) return;
+
+    /* Поля, которые записываются. Только эти два — остальные обрабатываются
+       хуками геттеров и здесь не трогаются. */
+    static NSArray<NSString *> *const savedFields = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        savedFields = @[@"current_region", @"residence"];
+    });
+
+    if (isSignIn) {
+        /* При входе в аккаунт: восстанавливаем живые значения, ничего не подменяем.
+           Иначе аккаунт получит регион, не совпадающий с регионом привязки. */
+        id existingSys = params[@"sys_region"];
+        if ([existingSys isKindOfClass:[NSString class]]) {
+            if (sysRegion.length > 0) {
+                params[@"sys_region"] = sysRegion;
+            } else {
+                [params removeObjectForKey:@"sys_region"];
+            }
+        }
+        id existingTz = params[@"timezone_name"];
+        if ([existingTz isKindOfClass:[NSString class]]) {
+            params[@"timezone_name"] = timeZoneName.length > 0 ? timeZoneName : nil;
+        }
         return;
     }
-    if (![params isKindOfClass:[NSMutableDictionary class]]) return;
-    NSMutableDictionary *map = (NSMutableDictionary *)params;
 
-    // Только те поля, которые приложение уже заполнило. Добавление параметра,
-    // которого телефон такого региона не отправляет, само по себе является
-    // аномалией — так делает HushFeed, и это не случайность.
-    NSArray<NSString *> *stringFields = @[
-        @"region", @"sys_region", @"carrier_region",
-        @"current_region", @"residence", @"country_code",
-    ];
-
-    for (NSString *key in stringFields) {
-        id existing = map[key];
+    for (NSString *field in savedFields) {
+        id existing = params[field];
         if ([existing isKindOfClass:[NSString class]]) {
-            map[key] = iso;
+            params[field] = iso;
         }
     }
 
-    // Часовой пояс. HushFeed переписывает timezone_name тоже: сервер сверяет
-    // регион со временем запроса, и «регион JP + Europe/Moscow» — это
-    // противоречие, которое видно сразу.
-    //
-    // Пишем настоящий IANA-идентификатор, а не код страны. Неизвестный код
-    // оставляем поле в покое — хуже не трогать, чем подставить мусор.
-    NSString *zone = TimeZoneForCountry(ConfiguredCountry());
-    id existingZone = map[@"timezone_name"];
-    if (zone && [existingZone isKindOfClass:[NSString class]]) {
-        map[@"timezone_name"] = zone;
-    }
-
-    // Аналогично для смещения: только если поле пришло строкой-числом.
-    id existingOffset = map[@"timezone_offset"];
-    if ([existingOffset isKindOfClass:[NSString class]]) {
-        NSTimeZone *tz = [NSTimeZone timeZoneWithName:zone ?: @""];
-        if (tz) {
-            map[@"timezone_offset"] = [NSString stringWithFormat:@"%ld",
-                                       (long)(tz.secondsFromGMT / 3600)];
-        }
-    }
-
-    // carrier_region_v2 — только если текущее значение похоже на MCC.
-    id network = map[@"carrier_region_v2"];
+    /* carrier_region_v2 — только если текущее значение — ровно 3 цифры (MCC).
+       Иначе в поле кладут мусор. */
+    id network = params[@"carrier_region_v2"];
     if ([network isKindOfClass:[NSString class]]) {
         NSString *current = (NSString *)network;
-        BOOL looksLikeMcc = current.length >= 3 && current.length <= 4;
-        if (looksLikeMcc) {
-            map[@"carrier_region_v2"] = [mcc stringByAppendingString:mnc];
+        BOOL isMcc = current.length == 3
+            && ((unichar)[current characterAtIndex:0] >= '0' && (unichar)[current characterAtIndex:0] <= '9')
+            && ((unichar)[current characterAtIndex:1] >= '0' && (unichar)[current characterAtIndex:1] <= '9')
+            && ((unichar)[current characterAtIndex:2] >= '0' && (unichar)[current characterAtIndex:2] <= '9');
+        if (isMcc) {
+            params[@"carrier_region_v2"] = [mcc stringByAppendingString:mnc];
         }
     }
 }

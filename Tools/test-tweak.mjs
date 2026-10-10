@@ -80,15 +80,24 @@ console.log('\n== 4. Region parameters ==');
 
 // The key set comes from HushFeed, the most complete Android implementation.
 // Dropping one narrows the effect silently.
-for (const field of ['region', 'sys_region', 'carrier_region', 'current_region', 'residence', 'carrier_region_v2']) {
+//
+// HushFeed writes ONLY current_region and residence. The hub fields
+// (carrier_region, sys_region, region) are read but NOT written — they are
+// handled by getter hooks. Writing them here would be redundant.
+for (const field of ['current_region', 'residence']) {
   check(`rewrites ${field}`, src.includes(`@"${field}"`), 'HushFeed-confirmed parameter set');
 }
+
+check('does NOT write hub fields (handled by getter hooks)',
+  !src.includes('"region", @"sys_region", @"carrier_region"'),
+  'HushFeed: "carrier_region, sys_region and region are the region hub\'s own answers... they are only looked at here, never written"');
 
 check('only rewrites fields the app already filled',
   /isKindOfClass:\[NSString class\]/.test(code),
   'adding a parameter a same-region phone would not send is itself an anomaly');
 check('carrier_region_v2 only replaced when it parses as MCC',
-  /looksLikeMcc/.test(code));
+  /length == 3/.test(code) && /characterAtIndex:0/.test(code),
+  'HushFeed isMcc: exactly 3 digits, not 3-4 chars');
 check('country is configurable, not hardcoded',
   /TikTokRegionCountry/.test(src) && /kDefaultCountry/.test(src),
   'both the override key and the fallback must exist');
