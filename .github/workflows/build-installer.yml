@@ -22,7 +22,16 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-latest
+    # Сборка идёт на Windows-раннере, а не на macOS.
+    #
+    # Почему так: Rust собирает .exe линкером той же системы. Кросс-сборка
+    # с macOS на Windows требует link.exe и полного набора Windows SDK,
+    # которых на macOS-раннере нет: сборка падала с
+    #   error: linker `link.exe` not found
+    #
+    # На windows-раннере всё это есть из коробки, а для публичного
+    # репозитория он бесплатен.
+    runs-on: windows-latest
     timeout-minutes: 30
 
     steps:
@@ -31,46 +40,39 @@ jobs:
 
       # insert-dylib: вставка LC_LOAD_DYLIB в Mach-O. Написан на Rust,
       # работает на всех трёх платформах. Лицензия MIT — совместима с GPL-3.0.
-      - name: Поставить Rust с поддержкой Windows
+      - name: Поставить Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
 
       - name: Собрать insert-dylib под Windows
         run: |
-          set -euo pipefail
-          git clone --depth 1 https://github.com/hookforge/insert-dylib.git /tmp/insert-dylib
-          cd /tmp/insert-dylib
-          rustup target add x86_64-pc-windows-msvc
-          cargo build --release --target x86_64-pc-windows-msvc
-          ls -lh target/x86_64-pc-windows-msvc/release/
-          mkdir -p "$GITHUB_WORKSPACE/out"
-          cp target/x86_64-pc-windows-msvc/release/*.exe "$GITHUB_WORKSPACE/out/"
+          git clone --depth 1 https://github.com/hookforge/insert-dylib.git insert-dylib
+          cd insert-dylib
+          cargo build --release
+          New-Item -ItemType Directory -Force -Path ..\out | Out-Null
+          Copy-Item target\release\insert-dylib.exe ..\out\
+          Get-ChildItem ..\out\insert-dylib.exe | Select-Object Name, Length
 
       - name: Собрать обёртку установщика
         # Небольшая программа, которая делает всю работу за пользователя:
         # проверяет шифрование, распаковывает IPA, вставляет библиотеку,
         # кладёт её внутрь и собирает обратно.
         run: |
-          set -euo pipefail
-          mkdir -p out/patcher/src
-          cp Tools/patcher/Cargo.toml out/patcher/
-          cp Tools/patcher/src/main.rs out/patcher/src/
-          cd out/patcher
-          cargo build --release --target x86_64-pc-windows-msvc
-          cp target/x86_64-pc-windows-msvc/release/*.exe "$GITHUB_WORKSPACE/out/"
-          ls -lh "$GITHUB_WORKSPACE/out"
+          New-Item -ItemType Directory -Force -Path out\patcher\src | Out-Null
+          Copy-Item Tools\patcher\Cargo.toml out\patcher\
+          Copy-Item Tools\patcher\src\main.rs out\patcher\src\
+          cd out\patcher
+          cargo build --release
+          Copy-Item target\release\tiktok-region-installer.exe ..\
+          Get-ChildItem ..\*.exe | Select-Object Name, Length
 
       - name: Собрать всё в один архив
+        shell: pwsh
         run: |
-          set -euo pipefail
-          cd out
-          cp ../LICENSE . 2>/dev/null || true
-          # insert-dylib лежит рядом: обёртка вызывает его сама,
+          Copy-Item LICENSE out\ -ErrorAction SilentlyContinue
+          # insert-dylib кладём рядом: обёртка вызывает его сама,
           # пользователю не нужно знать, что он существует.
-          zip -qry "$GITHUB_WORKSPACE/tiktok-region-installer-windows.zip" .
-          cd "$GITHUB_WORKSPACE"
-          ls -lh tiktok-region-installer-windows.zip
+          Compress-Archive -Path out\* -DestinationPath tiktok-region-installer-windows.zip
+          Get-Item tiktok-region-installer-windows.zip | Select-Object Name, Length
 
       - name: Отдать установщик
         uses: actions/upload-artifact@v4
