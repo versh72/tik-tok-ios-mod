@@ -159,6 +159,7 @@ jobs:
             -Wall \
             -framework Foundation \
             -framework UIKit \
+            -I Harness/Classes \
             -o "$APP/Harness" \
             Harness/main.m
 
