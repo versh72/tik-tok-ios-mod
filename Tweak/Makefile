@@ -23,7 +23,3 @@ TikTokRegion_LIBRARIES  = objc
 THEOS_MAKE_PATH ?= $(THEOS)/makefiles
 
 include $(THEOS_MAKE_PATH)/tweak.mk
-
-# dylib, а не bundle: внедряется напрямую в Payload/TikTok.app
-internal-stage::
-	@echo "→ $(THEOS_OBJ_DIR)/$(TWEAK_NAME).dylib"

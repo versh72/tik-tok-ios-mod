@@ -101,7 +101,9 @@ jobs:
           # Причина: приложение из App Store собрано под arm64 даже на A14,
           # и arm64e для подмены не нужен. Смешивать нельзя — для arm64e
           # требуется отдельный package-конфиг, иначе make package падает.
-          make clean
+          # Без make clean: на свежем раннере чистить нечего, а internal-clean
+          # в Theos спотыкается об пустые переменные окружения
+          # ("rm: : No such file or directory") и роняет всю сборку.
           make package ARCHS=arm64 PACKAGE_CONFIG=iphoneos/clang/arm64
 
       - name: Проверить архитектуру бинарника
