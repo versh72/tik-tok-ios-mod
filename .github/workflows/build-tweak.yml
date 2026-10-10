@@ -63,16 +63,20 @@ jobs:
       - name: Установить Theos
         run: |
           set -euo pipefail
-          export THEOS=/opt/theos
-          # Без --depth: shallow-клон тянет только последний коммит, и
-          # submodule update падает с 'did not contain <sha>' (exit 128).
-          # Полный клон надёжнее, а времени на раннере хватает с запасом.
+          # ВАЖНО: путь должен быть в домашнем каталоге. /opt требует прав
+          # root, которых на раннере нет: git падает с
+          # "could not create work tree dir '/opt/theos': Permission denied"
+          # и вся сборка уходит в exit 128.
+          export THEOS="$HOME/theos"
+          # Полный клон: с --depth submodule update падает с
+          # 'did not contain <sha>', потому что shallow тянет один коммит.
           git clone --recursive https://github.com/theos/theos.git "$THEOS"
           git -C "$THEOS" submodule update --init --recursive
           echo "THEOS=$THEOS" >> "$GITHUB_ENV"
-          # Проверка, что тулчейн действительно на месте: без неё падение
-          # всплывёт позже, уже на шаге сборки, с невнятным сообщением.
+          # Проверка, что тулчейн на месте: иначе падение всплывёт позже,
+          # уже на шаге сборки, с невнятным сообщением.
           test -d "$THEOS/makefiles" || { echo "::error::theos не установлен"; exit 1; }
+          echo "theos установлен: $THEOS"
 
       - name: Проверить, что ObjC-мост согласован с C-логикой
         # Ключевая идея: ObjC НЕ содержит собственной логики подмены,
@@ -90,6 +94,9 @@ jobs:
         working-directory: Tweak
         run: |
           set -euo pipefail
+          echo "theos = $THEOS"
+          xcodebuild -version
+          echo "iphoneos SDK = $(xcrun --sdk iphoneos --show-sdk-version)"
           # ARCHS=arm64 переопределяет значение из Makefile (там arm64 arm64e).
           # Причина: приложение из App Store собрано под arm64 даже на A14,
           # и arm64e для подмены не нужен. Смешивать нельзя — для arm64e
