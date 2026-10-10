@@ -42,7 +42,10 @@ const count = (needle) => (code.match(new RegExp(needle, 'g')) || []).length;
 
 const impls = count('@implementation');
 const ends = count('@end');
-check('@implementation count matches @end count', impls === ends, `${impls} vs ${ends}`);
+const ifaces = count('@interface');
+check('@implementation count matches @end minus @interface',
+  impls === ends - ifaces,
+  `${impls} impl vs ${ends} end vs ${ifaces} iface — forward declarations add @end`);
 check('there is at least one category', impls > 0, `${impls} found`);
 
 for (const [open, close, label] of [['{', '\\}', 'braces'], ['\\(', '\\)', 'parens'], ['\\[', '\\]', 'brackets']]) {

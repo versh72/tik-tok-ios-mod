@@ -46,7 +46,39 @@
 // Чистая логика региона. Компилируется и тестируется отдельно от iOS runtime
 // (см. Tools/test-region-logic.c), поэтому её проверяемый код и есть тот
 // код, который попадает в dylib.
-#import "../RegionLogic.h"
+#import "RegionLogic.h"
+
+/*
+ * Прямые объявления категорий.
+ *
+ * Без них вызовы вида [NSObject ...] не компилируются: категория на
+ * NSObject не создаёт класс TikTokRegion. Проверено компиляцией на Windows
+ * (Tools/Shim) — компилятор указал «use of undeclared identifier».
+ */
+@interface NSObject (TikTokRegionTLS)
++ (void)tt_enableTLSBypass;
+@end
+
+@interface NSObject (TikTokRegion)
++ (void)setCurrentRequestPath:(NSString *)path;
++ (NSString *)currentRequestPath;
++ (void)tt_enableRegionSpoof;
++ (void)tt_rewriteParams:(NSMutableDictionary *)params
+              countryIso:(NSString *)iso
+                     mcc:(NSString *)mcc
+                     mnc:(NSString *)mnc
+              isSignIn:(BOOL)isSignIn
+           sysRegion:(NSString *)sysRegion
+          timeZoneName:(NSString *)timeZoneName;
+@end
+
+@interface NSObject (TikTokRegionIntegrity)
++ (void)tt_enableIntegritySpoof;
+@end
+
+@interface NSObject (TikTokRegionJailbreak)
++ (void)tt_enableJailbreakSpoof;
+@end
 
 #pragma mark - Configuration
 
@@ -135,7 +167,7 @@ typedef struct {
     const char *originalAlias;   // уникальное имя для -original
 } HookSpec;
 
-static NSMutableDictionary<NSValue *, IMP> *gOriginalIMP = nil;
+static NSMutableDictionary<NSValue *, NSValue *> *gOriginalIMP = nil;
 
 /// Ставит хук, если класс и селектор найдены. Молча пропускает иначе.
 static BOOL TTHook(Class cls, SEL selector, IMP replacement) {
@@ -148,7 +180,7 @@ static BOOL TTHook(Class cls, SEL selector, IMP replacement) {
     NSValue *key = [NSValue valueWithPointer:selector];
 
     if (!gOriginalIMP) gOriginalIMP = [NSMutableDictionary dictionary];
-    if (!gOriginalIMP[key]) gOriginalIMP[key] = original;
+    if (!gOriginalIMP[key]) gOriginalIMP[key] = [NSValue valueWithPointer:original];
 
     method_setImplementation(method, replacement);
     return YES;
@@ -181,20 +213,20 @@ static BOOL gSkipSSL = YES;
                imp_implementationWithBlock(^(id self, BOOL value) {
             if (gSkipSSL) {
                 // Вызываем оригинал, но всегда с YES
-                IMP original = gOriginalIMP[[NSValue valueWithPointer:NSSelectorFromString(@"setSkipSSLCertificateError:")]];
+                IMP original = [gOriginalIMP[[NSValue valueWithPointer:NSSelectorFromString(@"setSkipSSLCertificateError:")]] pointerValue];
                 if (original) {
                     ((void (*)(id, SEL, BOOL))original)(self, _cmd, YES);
                 }
                 return;
             }
-            IMP original = gOriginalIMP[[NSValue valueWithPointer:_cmd]];
+            IMP original = [gOriginalIMP[[NSValue valueWithPointer:_cmd]] pointerValue];
             if (original) ((void (*)(id, SEL, BOOL))original)(self, _cmd, value);
         }));
 
         Class chromium = NSClassFromString(@"TTNetworkManagerChromium");
         TTHook(chromium, NSSelectorFromString(@"setSkipSSLCertificateError:"),
                imp_implementationWithBlock(^(id self, BOOL value) {
-            IMP original = gOriginalIMP[[NSValue valueWithPointer:_cmd]];
+            IMP original = [gOriginalIMP[[NSValue valueWithPointer:_cmd]] pointerValue];
             ((void (*)(id, SEL, BOOL))original)(self, _cmd, gSkipSSL ? YES : value);
         }));
 
@@ -261,7 +293,7 @@ static NSString *gCurrentRequestPath = nil;
 
                 // (Map, boolean)V — параметры Map первым
                 TTHook(cls, sel, imp_implementationWithBlock(^(id _self, id _cmd, NSMutableDictionary *params, id flag) {
-                    IMP original = gOriginalIMP[[NSValue valueWithPointer:_cmd]];
+                    IMP original = [gOriginalIMP[[NSValue valueWithPointer:_cmd]] pointerValue];
                     ((void (*)(id, SEL, id, id))original)(_self, _cmd, params, flag);
 
                     /* Определяем, является ли этот запрос входом в аккаунт.
@@ -276,7 +308,7 @@ static NSString *gCurrentRequestPath = nil;
                     NSString *liveSys = params[@"_live_sys_region"] ?: @"";
                     NSString *liveTz  = params[@"_live_timezone_name"] ?: @"";
 
-                    [TikTokRegion tt_rewriteParams:params
+                    [NSObject tt_rewriteParams:params
                                         countryIso:lower
                                              mcc:ConfiguredMCC()
                                              mnc:ConfiguredMNC()
@@ -313,13 +345,13 @@ static NSString *gCurrentRequestPath = nil;
                 if (method_getNumberOfArguments(methods[i]) < 3) continue;
 
                 TTHook(cls, sel, imp_implementationWithBlock(^(id _self, id _cmd, NSString *path) {
-                    IMP original = gOriginalIMP[[NSValue valueWithPointer:_cmd]];
+                    IMP original = [gOriginalIMP[[NSValue valueWithPointer:_cmd]] pointerValue];
                     ((void (*)(id, SEL, id))original)(_self, _cmd, path);
 
                     /* Сохраняем путь в параметрах, чтобы tt_rewriteParams
                        мог определить запрос входа. */
                     if ([path isKindOfClass:[NSString class]]) {
-                        [TikTokRegion setCurrentRequestPath:path];
+                        [NSObject setCurrentRequestPath:path];
                     }
                 }));
                 TTLog(@"hooked path %@ on %@", name2, clsName);
@@ -430,7 +462,7 @@ static NSString *gCurrentRequestPath = nil;
             [params removeObjectForKey:@(cKeys[i])];
         } else {
             NSString *newValue = @(cVals[i]);
-            if (![newValue isEqualToString:originalValues[i]]) {
+            if (![newValue isEqualToString:[originalValues objectAtIndex:i]]) {
                 params[@(cKeys[i])] = newValue;
             }
         }
@@ -462,7 +494,7 @@ static NSString *gCurrentRequestPath = nil;
         TTHook([NSBundle class], NSSelectorFromString(@"pathForResource:ofType:"),
                imp_implementationWithBlock(^(id _self, id _cmd, NSString *name, NSString *ext) {
             if ([name isEqualToString:@"mobileprovision"]) return nil;
-            IMP original = gOriginalIMP[[NSValue valueWithPointer:_cmd]];
+            IMP original = [gOriginalIMP[[NSValue valueWithPointer:_cmd]] pointerValue];
             return ((id (*)(id, SEL, id, id))original)(_self, _cmd, name, ext);
         }));
 
@@ -495,7 +527,7 @@ static NSString *gCurrentRequestPath = nil;
         TTHook(NSClassFromString(@"AWESecurityConfig"),
                NSSelectorFromString(@"licenseForAppId:"),
                imp_implementationWithBlock(^id(id _self, id _cmd, id appId) {
-            IMP original = gOriginalIMP[[NSValue valueWithPointer:_cmd]];
+            IMP original = [gOriginalIMP[[NSValue valueWithPointer:_cmd]] pointerValue];
             return ((id (*)(id, SEL, id))original)(_self, _cmd, appId);
         }));
 
@@ -540,7 +572,7 @@ static NSString *gCurrentRequestPath = nil;
             if ([path isKindOfClass:[NSString class]] && [paths containsObject:path]) {
                 return NO;
             }
-            IMP original = gOriginalIMP[[NSValue valueWithPointer:_cmd]];
+            IMP original = [gOriginalIMP[[NSValue valueWithPointer:_cmd]] pointerValue];
             return ((BOOL (*)(id, SEL, id))original)(_self, _cmd, path);
         }));
 

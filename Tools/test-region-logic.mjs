@@ -34,7 +34,8 @@ check('tt_rewriteParams делегирует в rl_rewrite_params',
   /rl_rewrite_params\s*\(/.test(src),
   'иначе dylib несёт собственную копию правил, которая может разойтись');
 check('ObjC включает RegionLogic.h',
-  src.includes('../RegionLogic.h'));
+  src.includes('RegionLogic.h'),
+  'the dylib must carry the tested C rules, not a second copy');
 
 // Keys are collected as UTF-8 strings. A key that is not a string must be
 // skipped, or strdup(NULL) is undefined behaviour.
