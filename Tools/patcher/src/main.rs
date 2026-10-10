@@ -186,30 +186,48 @@ fn main() {
     }
 
     // ── 3. исходный IPA ───────────────────────────────────────────────────
-    step("Ищу файл TikTok.ipa");
+    step("Ищу файл приложения");
 
+    // Раньше искался только файл с именем TikTok.ipa, из-за чего
+    // установщик не мог поставить наше собственное приложение Harness -
+    // хотя для него расшифровка не нужна вовсе. Теперь берётся любой
+    // .ipa, а TikTok.ipa имеет приоритет.
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Ok(rd) = fs::read_dir(exe_dir()) {
         for e in rd.flatten() {
             let p = e.path();
             let name = p.file_name().unwrap_or_default().to_string_lossy();
-            if name.eq_ignore_ascii_case("TikTok.ipa") {
+            if name.to_ascii_lowercase().ends_with(".ipa") {
+                // Самый свежий результат прошлого запуска не берём.
+                let stem = p.file_stem().unwrap_or_default().to_string_lossy();
+                if stem.eq_ignore_ascii_case("TikTok-region") {
+                    continue;
+                }
                 candidates.push(p);
             }
         }
     }
 
+    // Приоритет: TikTok.ipa, иначе первый попавшийся.
+    if let Some(pos) = candidates
+        .iter()
+        .position(|p| p.file_name().unwrap_or_default().eq_ignore_ascii_case("TikTok.ipa"))
+    {
+        candidates.swap(0, pos);
+    }
+
     if candidates.is_empty() {
         fail(
-            "файл TikTok.ipa не найден рядом с программой.\n\
+            "рядом с программой нет файла .ipa.\n\
              \n\
              Положи его в ту же папку, где лежит эта программа, \
              и запусти снова.\n\
              \n\
-             Имя должно быть ровно TikTok.ipa.",
+             Подойдёт любое имя, но если это TikTok — лучше назвать \
+             его TikTok.ipa.",
         );
     }
-    ok(&format!("файл: {}", candidates[0].display()));
+    ok(&format!("файл: {}", candidates[0].file_name().unwrap_or_default().to_string_lossy()));
 
     let input = candidates[0].clone();
     let output = exe_dir().join("TikTok-region.ipa");
@@ -230,8 +248,16 @@ fn main() {
         }
         _ => args.push("-a".into()),
     }
-    args.push("-l".into());
-    args.push(dylib.to_string_lossy().to_string());
+    // Наше собственное приложение Harness уже содержит библиотеку.
+    // Повторная вставка не нужна и только мешает: получилось бы
+    // два одинаковых файла внутри.
+    let already = ipa_contains(&input, DYLIB_NAME);
+    if already {
+        say("  библиотека уже внутри — вставлять не буду");
+    } else {
+        args.push("-l".into());
+        args.push(dylib.to_string_lossy().to_string());
+    }
     args.push("-o".into());
     args.push(output.to_string_lossy().to_string());
     args.push(input.to_string_lossy().to_string());
@@ -281,6 +307,22 @@ fn main() {
 /// Раньше вывод и код возврата брались двумя отдельными запусками:
 /// программа выполнялась дважды, а для zsign это означало двойную
 /// подпись и лишние секунды.
+/// Проверяет, лежит ли файл с таким именем внутри IPA.
+///
+/// Нужна, чтобы не вставлять библиотеку повторно в приложение,
+// которое её уже содержит.
+fn ipa_contains(ipa: &Path, needle: &str) -> bool {
+    let data = match fs::read(ipa) {
+        Ok(d) => d,
+        Err(_) => return false,
+    };
+    // Ищем в сырых байтах: имена файлов в ZIP лежат как есть.
+    // Ложное срабатывание на содержимом файла невозможно, потому
+    // что проверяем именно вхождение имени с расширением пути.
+    data.windows(needle.len())
+        .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
 fn run(program: &Path, args: &[&str]) -> (String, i32) {
     let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     run_owned(program, owned)
