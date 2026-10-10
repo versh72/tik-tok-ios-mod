@@ -43,6 +43,11 @@
 #import <objc/runtime.h>
 #import <Security/Security.h>
 
+// Чистая логика региона. Компилируется и тестируется отдельно от iOS runtime
+// (см. Tools/test-region-logic.c), поэтому её проверяемый код и есть тот
+// код, который попадает в dylib.
+#import "../RegionLogic.h"
+
 #pragma mark - Configuration
 
 /*
@@ -353,12 +358,16 @@ static NSString *gCurrentRequestPath = nil;
 
 /// Переписывает ключи региона в словаре параметров.
 ///
-/// Логика сверена с HushFeed RegionSpoof.java:
+/// Реальные правила живут в RegionLogic.h и проверяются настоящим C-тестом
+/// (Tools/test-region-logic.c — 44 проверки, компилируется и исполняется).
+/// Здесь только перевод представления NSDictionary <---> параллельные массивы.
+///
+/// Правила, реализованные в RegionLogic.h:
 ///   - пишутся ТОЛЬКО current_region и residence
 ///   - carrier_region, sys_region, region читаются, но не пишутся
-///     (их уже меняют хуки геттеров)
+///     (их уже меняют хуки геттеров — как в HushFeed)
 ///   - carrier_region_v2 пишется только если текущее значение — ровно 3 цифры
-///   - при is_sign_in == YES: current_region и residence НЕ трогаются,
+///   - при isSignIn == YES: current_region и residence НЕ трогаются,
 ///     а sys_region и timezone_name возвращаются к живым значениям
 + (void)tt_rewriteParams:(NSMutableDictionary *)params
               countryIso:(NSString *)iso
@@ -369,55 +378,76 @@ static NSString *gCurrentRequestPath = nil;
           timeZoneName:(NSString *)timeZoneName {
 
     if (![params isKindOfClass:[NSMutableDictionary class]]) return;
+    if (!iso || !mcc || !mnc) return;
+    if (params.count == 0) return;
 
-    /* Поля, которые записываются. Только эти два — остальные обрабатываются
-       хуками геттеров и здесь не трогаются. */
-    static NSArray<NSString *> *const savedFields = nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        savedFields = @[@"current_region", @"residence"];
-    });
+    NSUInteger n = 0;
+    for (NSString *k in params.allKeys) {
+        if ([k isKindOfClass:[NSString class]]) n++;
+    }
+    if (n == 0) return;
 
-    if (isSignIn) {
-        /* При входе в аккаунт: восстанавливаем живые значения, ничего не подменяем.
-           Иначе аккаунт получит регион, не совпадающий с регионом привязки. */
-        id existingSys = params[@"sys_region"];
-        if ([existingSys isKindOfClass:[NSString class]]) {
-            if (sysRegion.length > 0) {
-                params[@"sys_region"] = sysRegion;
-            } else {
-                [params removeObjectForKey:@"sys_region"];
-            }
-        }
-        id existingTz = params[@"timezone_name"];
-        if ([existingTz isKindOfClass:[NSString class]]) {
-            params[@"timezone_name"] = timeZoneName.length > 0 ? timeZoneName : nil;
-        }
+    char **cKeys = (char **)calloc(n, sizeof(char *));
+    char **cVals = (char **)calloc(n, sizeof(char *));
+    if (!cKeys || !cVals) {
+        free(cKeys); free(cVals);
         return;
     }
+    NSMutableArray *originalValues = [NSMutableArray arrayWithCapacity:n];
 
-    for (NSString *field in savedFields) {
-        id existing = params[field];
-        if ([existing isKindOfClass:[NSString class]]) {
-            params[field] = iso;
+    NSUInteger idx = 0;
+    for (NSString *k in params.allKeys) {
+        if (![k isKindOfClass:[NSString class]]) continue;
+        const char *ck = [k UTF8String];
+        cKeys[idx] = strdup(ck ? ck : "");
+
+        NSString *v = params[k];
+        if ([v isKindOfClass:[NSString class]]) {
+            const char *cv = [v UTF8String];
+            cVals[idx] = strdup(cv ? cv : "");
+        } else {
+            cVals[idx] = NULL;   // нестроковое значение C-слой не трогает
+        }
+        [originalValues addObject:v];
+        idx++;
+    }
+
+    const char *cIso  = [iso  UTF8String] ?: "";
+    const char *cMcc  = [mcc  UTF8String] ?: "";
+    const char *cMnc  = [mnc  UTF8String] ?: "";
+    const char *cSys  = [sysRegion   UTF8String] ?: "";
+    const char *cZone = [timeZoneName UTF8String] ?: "";
+
+    rl_result_t r = rl_rewrite_params(
+        cKeys, cVals, n,
+        isSignIn ? 1 : 0,
+        cIso, cMcc, cMnc,
+        cSys, cZone
+    );
+
+    for (NSUInteger i = 0; i < n; i++) {
+        if (cVals[i] == NULL) {
+            [params removeObjectForKey:@(cKeys[i])];
+        } else {
+            NSString *newValue = @(cVals[i]);
+            if (![newValue isEqualToString:originalValues[i]]) {
+                params[@(cKeys[i])] = newValue;
+            }
         }
     }
 
-    /* carrier_region_v2 — только если текущее значение — ровно 3 цифры (MCC).
-       Иначе в поле кладут мусор. */
-    id network = params[@"carrier_region_v2"];
-    if ([network isKindOfClass:[NSString class]]) {
-        NSString *current = (NSString *)network;
-        BOOL isMcc = current.length == 3
-            && ((unichar)[current characterAtIndex:0] >= '0' && (unichar)[current characterAtIndex:0] <= '9')
-            && ((unichar)[current characterAtIndex:1] >= '0' && (unichar)[current characterAtIndex:1] <= '9')
-            && ((unichar)[current characterAtIndex:2] >= '0' && (unichar)[current characterAtIndex:2] <= '9');
-        if (isMcc) {
-            params[@"carrier_region_v2"] = [mcc stringByAppendingString:mnc];
-        }
+    if (r.changed_count > 0) {
+        TTLog(@"rewritten %d field(s), removed %d, sign_in=%d",
+              r.changed_count, r.removed_count, r.sign_in_skipped);
     }
+
+    for (NSUInteger i = 0; i < n; i++) {
+        free(cKeys[i]);
+        if (cVals[i]) free(cVals[i]);
+    }
+    free(cKeys);
+    free(cVals);
 }
-
 @end
 
 #pragma mark - 3. Притворяться оригинальной сборкой App Store

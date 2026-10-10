@@ -84,8 +84,15 @@ console.log('\n== 4. Region parameters ==');
 // HushFeed writes ONLY current_region and residence. The hub fields
 // (carrier_region, sys_region, region) are read but NOT written — they are
 // handled by getter hooks. Writing them here would be redundant.
+//
+// The field names now live in RegionLogic.h, which is what the C test
+// executes; the ObjC file only declares the macro names.
+const logic = readFileSync(join(ROOT, 'Tweak/RegionLogic.h'), 'utf8');
+const combined = src + '\n' + logic;
+
 for (const field of ['current_region', 'residence']) {
-  check(`rewrites ${field}`, src.includes(`@"${field}"`), 'HushFeed-confirmed parameter set');
+  check(`rewrites ${field}`, logic.includes(`"${field}"`),
+    'HushFeed-confirmed parameter set');
 }
 
 check('does NOT write hub fields (handled by getter hooks)',
@@ -93,10 +100,10 @@ check('does NOT write hub fields (handled by getter hooks)',
   'HushFeed: "carrier_region, sys_region and region are the region hub\'s own answers... they are only looked at here, never written"');
 
 check('only rewrites fields the app already filled',
-  /isKindOfClass:\[NSString class\]/.test(code),
-  'adding a parameter a same-region phone would not send is itself an anomaly');
+  /isKindOfClass:\[NSString class\]/.test(src),
+  'non-string values are passed as NULL so the C layer leaves them alone');
 check('carrier_region_v2 only replaced when it parses as MCC',
-  /length == 3/.test(code) && /characterAtIndex:0/.test(code),
+  /strlen\(value\) != 3/.test(logic),
   'HushFeed isMcc: exactly 3 digits, not 3-4 chars');
 check('country is configurable, not hardcoded',
   /TikTokRegionCountry/.test(src) && /kDefaultCountry/.test(src),
@@ -155,4 +162,41 @@ if (failed) {
   console.log('FAILED CHECKS:');
   for (const f of failures) console.log(`  - ${f.name}${f.detail ? `: ${f.detail}` : ''}`);
   process.exit(1);
+}
+console.log('\n== 9. The tested code IS the shipped code ==');
+
+// The logic used to be duplicated: RegionLogic.h (tested by a real C test)
+// and an inline copy in the ObjC method. A fix applied to one would silently
+// not reach the other. The ObjC method must now delegate to the C layer.
+const regionLogicH = readFileSync(join(ROOT, 'Tweak/RegionLogic.h'), 'utf8');
+
+check('TikTokRegion.m includes RegionLogic.h',
+  src.includes('../RegionLogic.h'),
+  'without this the dylib carries its own copy of the rules');
+check('tt_rewriteParams delegates to rl_rewrite_params',
+  /rl_rewrite_params\s*\(/.test(src),
+  'the C layer under test must be the one that runs');
+check('no inline duplicate of the field list in the ObjC',
+  !savedFieldsDuplicated(src),
+  'a second copy of the rules in the .m can drift from the tested C');
+
+check('RegionLogic.h defines the two written fields',
+  regionLogicH.includes('RL_FIELD_CURRENT_REGION')
+  && regionLogicH.includes('RL_FIELD_RESIDENCE'));
+check('RegionLogic.h does NOT list hub fields as written',
+  !/RL_FIELD_REGION.*RL_FIELD_RESIDENCE.*=\s*\{/.test(regionLogicH.replace(/\s+/g, ' ')),
+  'HushFeed: hub fields are "only looked at here, never written"');
+check('RegionLogic.h enforces exactly 3 digits for MCC',
+  /strlen\(value\) != 3/.test(regionLogicH));
+check('RegionLogic.h handles the sign-in path',
+  /RL_SIGN_IN_PATH/.test(regionLogicH) && /rl_is_sign_in/.test(regionLogicH));
+check('RegionLogic.h restores live sys_region and timezone on sign-in',
+  /RL_FIELD_SYS_REGION/.test(regionLogicH)
+  && /RL_FIELD_TIMEZONE_NAME/.test(regionLogicH)
+  && /removed_count/.test(regionLogicH));
+
+function savedFieldsDuplicated(source) {
+  // Any inline array of field names in the .m is a second source of truth.
+  return /NSArray<NSString \*> \*stringFields/.test(source)
+    || /savedFields = @\[@"/.test(source);
 }

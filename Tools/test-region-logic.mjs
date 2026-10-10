@@ -1,29 +1,22 @@
 #!/usr/bin/env node
-// Поведенческие тесты логики подмены региона.
+// Мост между NSDictionary и C-слоем.
 //
-// Проверяют семь требований из задачи:
-//   1. обработка query-параметров
-//   2. обработка подходящих форматов тела запроса
-//   3. корректное изменение только заданных полей
-//   4. сохранение остальных параметров
-//   5. согласованность региона и часового пояса
-//   6. повторный вызов без повторного повреждения запроса
-//   7. отказ от изменения неподходящих запросов
+// Этот файл ПРЕЖДЕ содержал копию логики подмены на JS. Копия могла
+// расходиться с исходником — и расходилась. Поведенческие тесты переехали
+// в Tools/test-region-logic.c, где исполняется настоящий RegionLogic.h.
 //
-// Логика сверена с HushFeed RegionSpoof.java (получен полный исходник).
-// Исправлены пять расхождений:
-//   1. Пишутся только current_region и residence
-//   2. Добавлена обработка запросов входа (/passport/)
-//   3. MCC проверяется как ровно 3 цифры
-//   4. При входе sys_region и timezone_name возвращаются к живым значениям
-//   5. Добавлен хук пути запроса
+// Здесь остаётся только то, что нельзя проверить в C: корректность перевода
+// представления NSDictionary <---> параллельные массивы.
+//
+// Запуск настоящих тестов:
+//   powershell -ExecutionPolicy Bypass -File Tools\test-region-logic-c.ps1
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 
 const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..');
-const objc = readFileSync(join(ROOT, 'Tweak/TikTokRegion.m'), 'utf8');
 
 let passed = 0, failed = 0;
 const failures = [];
@@ -32,265 +25,96 @@ const check = (name, cond, detail) => {
   else { failed++; failures.push({ name, detail }); console.log(`  FAIL ${name}${detail ? `\n         ${detail}` : ''}`); }
 };
 
-// ── Транскрипция логики из ObjC ─────────────────────────────────────────────
+const src = readFileSync(join(ROOT, 'Tweak/TikTokRegion.m'), 'utf8');
+const logic = readFileSync(join(ROOT, 'Tweak/RegionLogic.h'), 'utf8');
 
-const SAVED_FIELDS = ['current_region', 'residence'];
-const HUB_FIELDS = ['carrier_region', 'sys_region', 'region'];
+console.log('\n== 1. Мост NSDictionary -> C ==\n');
 
-function isMcc(value) {
-  if (!value) return false;
-  if (value.length !== 3) return false;
-  for (let i = 0; i < 3; i++) {
-    const c = value.charCodeAt(i);
-    if (c < 48 || c > 57) return false;
+check('tt_rewriteParams делегирует в rl_rewrite_params',
+  /rl_rewrite_params\s*\(/.test(src),
+  'иначе dylib несёт собственную копию правил, которая может разойтись');
+check('ObjC включает RegionLogic.h',
+  src.includes('../RegionLogic.h'));
+
+// Keys are collected as UTF-8 strings. A key that is not a string must be
+// skipped, or strdup(NULL) is undefined behaviour.
+check('нестроковые ключи пропускаются',
+  /isKindOfClass:\[NSString class\]\].*continue/s.test(src)
+  && /calloc\(n, sizeof\(char \*\)\)/.test(src),
+  'a non-string key would reach strdup(NULL)');
+
+// Values: a non-string is passed as NULL so the C layer leaves it alone.
+check('нестроковые значения передаются как NULL',
+  /cVals\[idx\] = NULL/.test(src),
+  'otherwise the C layer would see a valid pointer it must not overwrite');
+
+// A NULL value on the way back means "delete the field" (empty live region).
+check('NULL-результат трактуруется как удаление поля',
+  /if \(cVals\[i\] == NULL\)[\s\S]{0,80}removeObjectForKey/.test(src),
+  'HushFeed removes the field when the live value is empty');
+
+// Memory: every strdup must be freed, and the arrays must be freed too.
+{
+  const strdups = (src.match(/strdup\(/g) || []).length;
+  const frees = (src.match(/free\(/g) || []).length;
+  check('все strdup освобождаются', frees >= strdups + 2,
+    `${strdups} strdup vs ${frees} free — the arrays must be freed too`);
+}
+
+console.log('\n== 2. Настоящий C-тест исполняется ==\n');
+
+// The behavioural tests are in C and must actually run here, otherwise
+// "44 tests pass" becomes an unverified claim again.
+const zigCandidates = [
+  process.env.ZIG,
+  ...(process.env.LOCALAPPDATA ? [`${process.env.LOCALAPPDATA}\\Programs\\zig\\zig.exe`] : []),
+  'C:\\Program Files\\zig\\zig.exe',
+];
+const foundZig = zigCandidates.find(p => p && existsSync(p)) ?? null;
+
+check('найден C99-компилятор (zig)', foundZig !== null,
+  'winget install -e --id zig.zig — без него настоящий RegionLogic.h не исполняется');
+
+if (foundZig) {
+  const tmp = join(ROOT, 'rl_test.tmp');
+  try {
+    execFileSync(foundZig,
+      ['cc', '-std=c99', '-Wall', '-Wextra', '-O2',
+       join(ROOT, 'Tools/test-region-logic.c'), '-o', tmp],
+      { encoding: 'utf8', cwd: ROOT, stdio: ['pipe', 'pipe', 'pipe'] });
+    check('RegionLogic.h компилируется чисто (-Wall -Wextra)', true);
+  } catch (e) {
+    check('RegionLogic.h компилируется чисто (-Wall -Wextra)', false,
+      (e.stdout || '') + (e.stderr || ''));
   }
-  return true;
-}
 
-function rewriteParams(params, iso, mcc, mnc, isSignIn, sysRegion, timeZoneName) {
-  const changed = [];
-  const keys = Object.keys(params);
-
-  for (const key of keys) {
-    const value = params[key];
-
-    if (isSignIn) {
-      if (key === 'sys_region') {
-        if (typeof value === 'string') {
-          if (sysRegion && sysRegion.length > 0) {
-            params[key] = sysRegion;
-          } else {
-            delete params[key];
-          }
-          changed.push(key);
-        }
-      }
-      if (key === 'timezone_name') {
-        if (typeof value === 'string') {
-          params[key] = timeZoneName && timeZoneName.length > 0 ? timeZoneName : undefined;
-          changed.push(key);
-        }
-      }
-      continue;
-    }
-
-    if (SAVED_FIELDS.includes(key)) {
-      if (typeof value === 'string') {
-        params[key] = iso;
-        changed.push(key);
-      }
-    }
-
-    if (key === 'carrier_region_v2') {
-      if (typeof value === 'string' && isMcc(value)) {
-        params[key] = mcc + mnc;
-        changed.push(key);
-      }
-    }
+  try {
+    const out = execFileSync(tmp, [], { encoding: 'utf8', cwd: ROOT });
+    const m = out.match(/passed:\s*(\d+)\s+failed:\s*(\d+)/);
+    const n = m ? Number(m[1]) : 0;
+    const f = m ? Number(m[2]) : -1;
+    check(`настоящий C-тест: ${n} проверок проходят`, n >= 40 && f === 0);
+  } catch (e) {
+    check('настоящий C-тест исполняется', false,
+      (e.stdout || '') + (e.stderr || ''));
   }
-
-  return { params, changed };
 }
 
-// ── 1. Обработка query-параметров ───────────────────────────────────────────
-
-console.log('\n== 1. Обработка query-параметров ==');
-
-{
-  const p = { region: 'RU', current_region: 'RU', residence: 'RU' };
-  const r = rewriteParams(p, 'jp', '440', '10', false, '', '');
-  check('current_region переписан', r.params.current_region === 'jp');
-  check('residence переписан', r.params.residence === 'jp');
-  check('region НЕ переписан (обрабатывается хуками геттеров)',
-    r.params.region === 'RU',
-    `стал ${r.params.region} — HushFeed явно не пишет это поле`);
-}
-
-// ── 2. Обработка форматов тела запроса ──────────────────────────────────────
-
-console.log('\n== 2. Обработка форматов тела запроса ==');
-
-{
-  // JSON-подобное тело
-  const body = { region: 'RU', current_region: 'RU', data: { nested: true } };
-  const r = rewriteParams(body, 'jp', '440', '10', false, '', '');
-  check('JSON-тело: current_region переписан', r.params.current_region === 'jp');
-  check('JSON-тело: вложенные объекты не повреждены',
-    r.params.data.nested === true);
-}
-
-{
-  // Тело с нестроковым значением
-  const body = { current_region: 250, region: 'RU' };
-  const r = rewriteParams(body, 'jp', '440', '10', false, '', '');
-  check('нестроковое значение не перезаписано', r.params.current_region === 250);
-}
-
-// ── 3. Изменение только заданных полей ─────────────────────────────────────
-
-console.log('\n== 3. Изменение только заданных полей ==');
-
-{
-  const p = {
-    region: 'RU', sys_region: 'RU', carrier_region: 'RU',
-    current_region: 'RU', residence: 'RU', carrier_region_v2: '250',
-    device_id: 'abc123', app_version: '34.1.0',
-  };
-  const r = rewriteParams(p, 'jp', '440', '10', false, '', '');
-  check('current_region → jp', r.params.current_region === 'jp');
-  check('residence → jp', r.params.residence === 'jp');
-  check('carrier_region_v2 → 44010', r.params.carrier_region_v2 === '44010');
-  check('region не тронут', r.params.region === 'RU');
-  check('sys_region не тронут', r.params.sys_region === 'RU');
-  check('carrier_region не тронут', r.params.carrier_region === 'RU');
-  check('device_id не тронут', r.params.device_id === 'abc123');
-  check('app_version не тронут', r.params.app_version === '34.1.0');
-}
-
-// ── 4. Сохранение остальных параметров ──────────────────────────────────────
-
-console.log('\n== 4. Сохранение остальных параметров ==');
-
-{
-  const p = {
-    current_region: 'RU',
-    video_id: '7123456789',
-    user_id: '9876543210',
-    timestamp: 1699999999,
-    nested: { deep: { value: 'keep' } },
-  };
-  const r = rewriteParams(p, 'jp', '440', '10', false, '', '');
-  check('video_id сохранён', r.params.video_id === '7123456789');
-  check('user_id сохранён', r.params.user_id === '9876543210');
-  check('timestamp сохранён', r.params.timestamp === 1699999999);
-  check('вложенная структура сохранена',
-    r.params.nested.deep.value === 'keep');
-}
-
-// ── 5. Согласованность региона и часового пояса ─────────────────────────────
-
-console.log('\n== 5. Согласованность региона и часового пояса ==');
-
-{
-  // При входе: sys_region и timezone_name возвращаются к живым значениям
-  const p = {
-    current_region: 'RU',
-    sys_region: 'RU',
-    timezone_name: 'Europe/Moscow',
-  };
-  const r = rewriteParams(p, 'jp', '440', '10', true, 'RU', 'Europe/Moscow');
-  check('при входе current_region НЕ подменён', r.params.current_region === 'RU');
-  check('при входе sys_region возвращён к живому', r.params.sys_region === 'RU');
-  check('при входе timezone_name возвращён к живому',
-    r.params.timezone_name === 'Europe/Moscow');
-}
-
-{
-  // При входе с пустым живым значением — поле удаляется
-  const p = { current_region: 'RU', sys_region: 'RU' };
-  const r = rewriteParams(p, 'jp', '440', '10', true, '', '');
-  check('пустой sys_region удаляется', !('sys_region' in r.params));
-}
-
-// ── 6. Повторный вызов без повреждения ─────────────────────────────────────
-
-console.log('\n== 6. Повторный вызов без повреждения ==');
-
-{
-  const p = { current_region: 'RU', residence: 'RU', device_id: 'abc' };
-  const r1 = rewriteParams(p, 'jp', '440', '10', false, '', '');
-  const r2 = rewriteParams(r1.params, 'jp', '440', '10', false, '', '');
-  check('второй вызов не ломает данные', r2.params.current_region === 'jp');
-  check('второй вызов сохраняет device_id', r2.params.device_id === 'abc');
-}
-
-{
-  // Повторный вызов с другим регионом
-  const p = { current_region: 'RU' };
-  const r1 = rewriteParams(p, 'jp', '440', '10', false, '', '');
-  const r2 = rewriteParams(r1.params, 'us', '310', '410', false, '', '');
-  check('смена региона работает', r2.params.current_region === 'us');
-}
-
-{
-  // Идемпотентность: повторный вызов с теми же параметрами не должен
-  // менять результат. Логика не отслеживает "уже изменено" — она просто
-  // ставит то же значение. Это не повреждение, но результат должен быть
-  // идентичным.
-  const p = { current_region: 'RU', residence: 'RU', device_id: 'abc' };
-  const r1 = rewriteParams(p, 'jp', '440', '10', false, '', '');
-  const r2 = rewriteParams(r1.params, 'jp', '440', '10', false, '', '');
-  check('повторный вызов даёт тот же результат',
-    r2.params.current_region === r1.params.current_region
-    && r2.params.residence === r1.params.residence
-    && r2.params.device_id === r1.params.device_id,
-    'idempotency: same input → same output');
-}
-
-// ── 7. Отказ от изменения неподходящих запросов ────────────────────────────
-
-console.log('\n== 7. Отказ от изменения неподходящих запросов ==');
-
-{
-  // Пустой словарь
-  const p = {};
-  const r = rewriteParams(p, 'jp', '440', '10', false, '', '');
-  check('пустой словарь не ломается', Object.keys(r.params).length === 0);
-}
-
-{
-  // Словарь без региональных полей
-  const p = { device_id: 'abc', video_id: '123' };
-  const r = rewriteParams(p, 'jp', '440', '10', false, '', '');
-  check('без региональных полей — ничего не меняется', r.changed.length === 0);
-}
-
-{
-  // carrier_region_v2 с не-MCC значением
-  const p = { carrier_region_v2: 'not-a-mcc' };
-  const r = rewriteParams(p, 'jp', '440', '10', false, '', '');
-  check('не-MCC значение не трогается', r.params.carrier_region_v2 === 'not-a-mcc');
-}
-
-{
-  // carrier_region_v2 с 2-буквенным кодом
-  const p = { carrier_region_v2: 'RU' };
-  const r = rewriteParams(p, 'jp', '440', '10', false, '', '');
-  check('2-буквенный код не считается MCC', r.params.carrier_region_v2 === 'RU');
-}
-
-{
-  // carrier_region_v2 с 4-значным значением
-  const p = { carrier_region_v2: '1234' };
-  const r = rewriteParams(p, 'jp', '440', '10', false, '', '');
-  check('4-значное значение не считается MCC', r.params.carrier_region_v2 === '1234');
-}
-
-// ── 8. Сверка с исходником ObjC ─────────────────────────────────────────────
-
-console.log('\n== 8. Сверка с исходником ObjC ==');
+console.log('\n== 3. Правила в C совпадают с HushFeed ==\n');
 
 check('пишутся только current_region и residence',
-  objc.includes('"current_region"') && objc.includes('"residence"')
-  && !objc.includes('"region", @"sys_region", @"carrier_region"'),
-  'HushFeed пишет только эти два поля');
-
-check('MCC проверяется как ровно 3 цифры',
-  /length == 3/.test(objc) && /characterAtIndex:0.*'0'.*'9'/.test(objc),
-  'не 3-4 символа, как было раньше');
-
-check('есть обработка входа в аккаунт',
-  /isSignIn/.test(objc) && /hasPrefix:@"\/passport\/"/.test(objc));
-
-check('при входе sys_region возвращается к живому',
-  /sysRegion/.test(objc) && /removeObjectForKey:@"sys_region"/.test(objc));
-
-check('есть хук пути запроса',
-  /hasSuffix:@"path:"/.test(objc) && /setCurrentRequestPath/.test(objc));
-
-check('HUB-поля не пишутся в tt_rewriteParams',
-  !objc.includes('for (NSString *field in stringFields)'),
-  'прежний код писал все шесть полей — исправлено');
+  logic.includes('#define RL_FIELD_CURRENT_REGION "current_region"')
+  && logic.includes('#define RL_FIELD_RESIDENCE      "residence"'));
+check('hub-поля объявлены, но НЕ пишутся циклом',
+  logic.includes('#define RL_FIELD_REGION')
+  && !logic.includes('RL_FIELD_REGION") == 0'));
+check('MCC — ровно 3 цифры', /strlen\(value\) != 3/.test(logic));
+check('вход определяется по пути', /RL_SIGN_IN_PATH "passport\/"/.test(logic));
+check('при входе восстанавливаются живые sys_region и timezone_name',
+  logic.includes('RL_FIELD_SYS_REGION') && logic.includes('RL_FIELD_TIMEZONE_NAME'));
+check('пустое живое значение удаляет поле',
+  /values\[i\] = NULL;\s*\/\* пустое живое/.test(logic)
+  || /removed_count\+\+/.test(logic));
 
 console.log(`\n${'='.repeat(60)}`);
 console.log(`passed: ${passed}   failed: ${failed}`);
