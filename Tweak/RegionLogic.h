@@ -89,6 +89,11 @@ static int rl_is_sign_in(const char *path) {
  *   mcc, mnc      — коды оператора
  *   sys_region    — живое значение sys_region (для восстановления при входе)
  *   timezone_name — живое значение timezone_name (для восстановления при входе)
+ *   mccmnc_scratch — буфер вызывающего кода не короче RL_MCCMNC_MAX.
+ *     Обязателен: values[] может указывать на этот буфер, поэтому он должен
+ *     жить дольше вызова. Нельзя писать в out.mccmnc — тот живёт на стеке
+ *     этой функции и умирает вместе с ней.
+ *   mccmnc_scratch_len — размер буфера
  *
  * Возвращает rl_result_t с описанием изменений.
  *
@@ -110,7 +115,8 @@ static rl_result_t rl_rewrite_params(
     int is_sign_in,
     const char *country_iso,
     const char *mcc, const char *mnc,
-    const char *sys_region, const char *timezone_name
+    const char *sys_region, const char *timezone_name,
+    char *mccmnc_scratch, size_t mccmnc_scratch_len
 ) {
     rl_result_t out;
     out.changed_count = 0;
@@ -161,12 +167,24 @@ static rl_result_t rl_rewrite_params(
 
         /* carrier_region_v2 — только если текущее значение ровно 3 цифры. */
         if (strcmp(key, RL_FIELD_NETWORK_COUNTRY) == 0) {
-            if (values[i] != NULL && rl_is_mcc(values[i])) {
-                int n = 0;
-                while (*mcc && n < RL_MCCMNC_MAX - 1) out.mccmnc[n++] = *mcc++;
-                while (*mnc && n < RL_MCCMNC_MAX - 1) out.mccmnc[n++] = *mnc++;
-                out.mccmnc[n] = '\0';
-                values[i] = out.mccmnc;
+            /* Буфер принадлежит вызывающему коду: если писать в out.mccmnc,
+               values[i] указывал бы на стек этой функции и умер после return.
+               ObjC-мост читает значение позже — там был бы мусор. */
+            if (values[i] != NULL && rl_is_mcc(values[i]) &&
+                mccmnc_scratch != NULL && mccmnc_scratch_len > 0) {
+                size_t n = 0, cap = mccmnc_scratch_len;
+                if (cap > RL_MCCMNC_MAX) cap = RL_MCCMNC_MAX;
+                while (*mcc && n < cap - 1) mccmnc_scratch[n++] = *mcc++;
+                while (*mnc && n < cap - 1) mccmnc_scratch[n++] = *mnc++;
+                mccmnc_scratch[n] = '\0';
+                values[i] = mccmnc_scratch;
+                /* Копия в структуре — для отчётности, не для values[i]. */
+                size_t k = 0;
+                while (mccmnc_scratch[k] && k < RL_MCCMNC_MAX - 1) {
+                    out.mccmnc[k] = mccmnc_scratch[k];
+                    k++;
+                }
+                out.mccmnc[k] = '\0';
                 out.changed_count++;
             }
             continue;

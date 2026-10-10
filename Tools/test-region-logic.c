@@ -60,6 +60,24 @@ static const char *get(struct map *m, const char *key) {
     return NULL;
 }
 
+/* Буфер вызывающего кода. Раньше rl_rewrite_params писал MCC+MNC в свой
+   локальный массив и возвращал на него указатель — указатель умирал вместе
+   с кадром функции. Тесты этого не видели: значение читалось сразу, пока
+   стек ещё не затёрт. Макрос ниже прячет буфер, чтобы правки не разошлись
+   по всем вызовам; отдельный тест ниже проверяет время жизни. */
+static char scratch_[RL_MCCMNC_MAX];
+#define rl_rewrite_params(k, v, c, s, ci, mcc, mnc, sr, tz) \
+    rl_rewrite_params((k), (v), (c), (s), (ci), (mcc), (mnc), (sr), (tz), \
+                      scratch_, sizeof scratch_)
+
+/* Загрязняет стек, чтобы погибший указатель проявился как мусор. */
+static void clobber_stack(int depth) {
+    volatile char junk[512];
+    for (int i = 0; i < 512; i++) junk[i] = (char)(i ^ depth);
+    if (depth > 0) clobber_stack(depth - 1);
+    else ((void)junk[0]);
+}
+
 int main(void) {
     printf("\n== 1. Обычный запрос: подменяются только два поля ==\n");
     {
@@ -209,6 +227,28 @@ int main(void) {
         check("os_version сохранён", strcmp(get(&m, "os_version"), "18.0") == 0, NULL);
         check("timezone_name НЕ тронут в обычном запросе",
               strcmp(get(&m, "timezone_name"), "Europe/Moscow") == 0, NULL);
+    }
+
+    printf("\n== 9. Значение жидёт после возврата из функции ==\n");
+    printf("   (регрессия: указатель на стековый буфер функции)\n");
+    {
+        struct map m = mk("carrier_region_v2=250", NULL);
+        rl_rewrite_params(m.keys, m.vals, m.count, 0, "jp", "440", "10", "", "");
+
+        /* Точный признак бага: values[i] обязан указывать В БУФЕР ВЫЗЫВАЮЩЕГО.
+           При старом коде он указывал в out.mccmnc — кадр rl_rewrite_params,
+           который уже мёртв. Адресная проверка ловит это всегда, тогда как
+           сравнение строки через время может случайно пройти. */
+        const char *v = get(&m, "carrier_region_v2");
+        int owned = (v >= scratch_ && v < scratch_ + sizeof scratch_);
+        check("указатель принадлежит буферу вызывающего кода", owned, v);
+        check("carrier_region_v2 -> 44010", strcmp(v, "44010") == 0, v);
+
+        /* И содержимое буфера должно пережить затирание стека. */
+        clobber_stack(24);
+        check("значение верно после затирания стека",
+              strcmp(get(&m, "carrier_region_v2"), "44010") == 0,
+              get(&m, "carrier_region_v2"));
     }
 
     printf("\n== 8. Второй регион (не хардкод JP) ==\n");

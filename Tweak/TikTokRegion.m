@@ -450,11 +450,17 @@ static NSString *gCurrentRequestPath = nil;
     const char *cSys  = [sysRegion   UTF8String] ?: "";
     const char *cZone = [timeZoneName UTF8String] ?: "";
 
+    /* Буфер живёт в этом кадре стека — дольше, чем значение хранится в
+       cVals. Если отдать функции её собственный локальный буфер, указатель
+       в cVals указывал бы на уже освобождённую память. */
+    char mccmncBuf[RL_MCCMNC_MAX];
+
     rl_result_t r = rl_rewrite_params(
         cKeys, cVals, n,
         isSignIn ? 1 : 0,
         cIso, cMcc, cMnc,
-        cSys, cZone
+        cSys, cZone,
+        mccmncBuf, sizeof(mccmncBuf)
     );
 
     for (NSUInteger i = 0; i < n; i++) {
