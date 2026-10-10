@@ -49,10 +49,9 @@ jobs:
           xcodebuild -version
           echo "SDK: $(xcrun --sdk iphoneos --show-sdk-version)"
 
-      - name: Собрать и прогнать чистую C-логику
-        # Это самый важный шаг. RegionLogic.h — тот самый код, который
-        # попадёт в dylib. Если тесты здесь падают, дальше идти незачем.
-        name: C-логика — компиляция и 47 тестов
+      # Это самый важный шаг. RegionLogic.h — тот самый код, который
+      # попадёт в dylib. Если тесты здесь падают, дальше идти незачем.
+      - name: C-логика — компиляция и 47 тестов
         run: |
           set -euo pipefail
           clang -std=c99 -Wall -Wextra -Werror \
