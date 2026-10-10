@@ -144,8 +144,18 @@ check('theos Makefile explains the arm64 vs arm64e choice',
   makefile.includes('arm64e'),
   'arm64e belongs to the jailbreak path; the two must not be mixed');
 check('theos Makefile links Security',
-  makefile.includes('Security'),
-  'SecTrust handling needs it');
+  makefile.includes('Security'),  'SecTrust handling needs it');
+
+// ARC запрещает неявное приведение id к SEL и к void*. Настоящий iOS SDK
+// ловит это ("disallowed with ARC"), а шим на Windows — нет, потому что
+// компилируется без ARC. Найдено при первой сборке в CI, поэтому
+// проверяем здесь: без неё баг вернётся незаметно.
+const rawCalls = src.match(/\)\(_cmd[,)]/g) || [];
+check('_cmd никогда не передаётся в вызов IMP без приведения к SEL',
+  rawCalls.length === 0,
+  `${rawCalls.length} вызовов: ARC потребует (SEL)_cmd`);
+check('оригинальный IMP вызывается с _self и (SEL)_cmd',
+  /\)\(_self, \(SEL\)_cmd,/.test(src));
 
 const sh = readFileSync(join(ROOT, 'Tweak/build.sh'), 'utf8');
 check('build script refuses an encrypted IPA',

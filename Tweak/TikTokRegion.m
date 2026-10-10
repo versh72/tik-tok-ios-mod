@@ -294,7 +294,7 @@ static NSString *gCurrentRequestPath = nil;
                 // (Map, boolean)V — параметры Map первым
                 TTHook(cls, sel, imp_implementationWithBlock(^(id _self, id _cmd, NSMutableDictionary *params, id flag) {
                     IMP original = [gOriginalIMP[[NSValue valueWithPointer:_cmd]] pointerValue];
-                    ((void (*)(id, SEL, id, id))original)(_self, _cmd, params, flag);
+                    ((void (*)(id, SEL, id, id))original)(_self, (SEL)_cmd, params, flag);
 
                     /* Определяем, является ли этот запрос входом в аккаунт.
                        HushFeed определяет это по пути запроса (/passport/),
@@ -346,7 +346,7 @@ static NSString *gCurrentRequestPath = nil;
 
                 TTHook(cls, sel, imp_implementationWithBlock(^(id _self, id _cmd, NSString *path) {
                     IMP original = [gOriginalIMP[[NSValue valueWithPointer:_cmd]] pointerValue];
-                    ((void (*)(id, SEL, id))original)(_self, _cmd, path);
+                    ((void (*)(id, SEL, id))original)(_self, (SEL)_cmd, path);
 
                     /* Сохраняем путь в параметрах, чтобы tt_rewriteParams
                        мог определить запрос входа. */
@@ -501,7 +501,7 @@ static NSString *gCurrentRequestPath = nil;
                imp_implementationWithBlock(^(id _self, id _cmd, NSString *name, NSString *ext) {
             if ([name isEqualToString:@"mobileprovision"]) return nil;
             IMP original = [gOriginalIMP[[NSValue valueWithPointer:_cmd]] pointerValue];
-            return ((id (*)(id, SEL, id, id))original)(_self, _cmd, name, ext);
+            return ((id (*)(id, SEL, id, id))original)(_self, (SEL)_cmd, name, ext);
         }));
 
         // Канал установки
@@ -534,7 +534,7 @@ static NSString *gCurrentRequestPath = nil;
                NSSelectorFromString(@"licenseForAppId:"),
                imp_implementationWithBlock(^id(id _self, id _cmd, id appId) {
             IMP original = [gOriginalIMP[[NSValue valueWithPointer:_cmd]] pointerValue];
-            return ((id (*)(id, SEL, id))original)(_self, _cmd, appId);
+            return ((id (*)(id, SEL, id))original)(_self, (SEL)_cmd, appId);
         }));
 
         TTLog(@"integrity spoof enabled");
@@ -579,7 +579,7 @@ static NSString *gCurrentRequestPath = nil;
                 return NO;
             }
             IMP original = [gOriginalIMP[[NSValue valueWithPointer:_cmd]] pointerValue];
-            return ((BOOL (*)(id, SEL, id))original)(_self, _cmd, path);
+            return ((BOOL (*)(id, SEL, id))original)(_self, (SEL)_cmd, path);
         }));
 
         TTLog(@"jailbreak checks neutralised");
