@@ -74,9 +74,14 @@ const found = TLS_WEAKENING.filter(p => p.test(code));
 check('no TLS verification is weakened', found.length === 0,
   found.map(String).join(', '));
 
-check('every probe URL is https',
-  (code.match(/fetch\(\s*url/g) || []).length === 1
-  && /const url = "https:\/\/"/.test(code));
+check('every literal URL the page requests is https',
+  !/["'`]http:\/\/(?!localhost)/.test(code),
+  'a cleartext URL would be blocked by ATS anyway');
+
+check('page states it does not break requests into DNS / TCP / TLS phases',
+  /не выполняет запрос ленты|X-Gorgon/.test(html) &&
+  !/разбивк\D{0,20}DNS \/ TCP \/ TLS/.test(html),
+  'the page no longer claims phase timings it cannot produce');
 
 console.log('\n== 3. The probe algorithm works ==');
 
@@ -155,12 +160,12 @@ console.log('\n== 5. The page states its own limits ==');
 
 for (const [name, pattern] of [
   ['a passing probe is not proof of reachability for any app',
-   /Успешная проверка не означает|не означает, что TikTok заработает/],
+   /не означает, что TikTok заработает|не доказывает, что TikTok отдаст актуальную ленту/],
   ['it does not inspect other apps traffic', /не видит трафик других приложений/],
   ['it does not detect a VPN', /не определяет, включён ли VPN/],
-  ['it does not offer DNS/TCP/TLS breakdown', /разбивк/],
+  ['it cannot request the feed, and says why', /X-Gorgon/],
 ]) {
-  check(`page states: ${name}`, pattern.test(html));
+  check(`page states: ${name}`, pattern.test(html.replace(/\n\s*/g, ' ')));
 }
 
 console.log('\n== 6. Comparison logic ==');
@@ -204,11 +209,57 @@ check('every function called in the page is defined',
   unknownCalls.length === 0,
   `undefined at runtime: ${unknownCalls.join(', ')}`);
 
-for (const [id, expected] of [['run', 1], ['runSet', 1], ['clear', 1]]) {
+for (const [id, expected] of [['runSet', 1], ['copy', 1], ['clear', 1]]) {
   const n = (script.match(
     new RegExp(`getElementById\\("${id}"\\)\\.addEventListener`, 'g')) || []).length;
   check(`#${id} has exactly ${expected} listener(s)`, n === expected, `found ${n}`);
 }
+
+console.log('\n== 8. Egress and leak detection ==');
+
+// These are the checks that decide Direction A. A page that only reports
+// reachability cannot distinguish "tunnel up" from "tunnel up but leaking".
+check('reads the IPv4 egress address',
+  /IP_CORS\s*=/.test(code) && /out\.ip\s*=\s*t/.test(code));
+check('reads geo for the egress address',
+  /ipinfo\.io\/json/.test(code) && /out\.country\s*=/.test(code));
+check('detects IPv6 presence',
+  /api6\.ipify\.org/.test(code) && /v6\s*=\s*true/.test(code));
+
+// A v6-only hostname is the only way to prove IPv6 egress from a browser:
+// a successful connection cannot happen without it.
+check('the IPv6 probe uses a v6-only host',
+  /api6\.ipify\.org/.test(html),
+  'a dual-stack host would resolve over v4 and prove nothing');
+
+// Every CORS-gated endpoint must actually send CORS, or the body is unreadable
+// and the field silently stays null. The URL is held in a constant, so the
+// check follows the constant to its fetch call rather than searching the URL
+// inline.
+const CORS_REQUIRED = [
+  ['IP_CORS',  'IPv4 egress'],
+  ['GEO_CORS', 'geo'],
+];
+for (const [constant, why] of CORS_REQUIRED) {
+  check(`${why} is fetched with mode:"cors"`,
+    new RegExp(`fetch\\(\\s*${constant}[\\s\\S]{0,80}?mode:\\s*"cors"`).test(code),
+    'without mode:"cors" the response is opaque and the value is never read');
+}
+
+// The host was verified to send CORS from this machine; if that changes the
+// page degrades to "не определён" rather than showing a wrong value.
+check('a failed egress read shows "не определён" rather than a stale value',
+  /не определён/.test(html));
+
+check('the report states reachability does not imply a working feed',
+  /не доказывает, что TikTok отдаст актуальную ленту/.test(html),
+  'this is the distinction the whole tool rests on');
+check('the report explains why the feed cannot be requested from a browser',
+  /X-Gorgon/.test(html));
+check('DNS leak is declared unmeasurable from a browser, not guessed',
+  /не сообщает, какой системный резолвер/.test(html.replace(/\n\s*/g, ' '))
+  && /ipleak/.test(html),
+  'a browser cannot see the system resolver; claiming otherwise would be a guess');
 
 console.log(`\n${'='.repeat(60)}`);
 console.log(`passed: ${passed}   failed: ${failed}`);

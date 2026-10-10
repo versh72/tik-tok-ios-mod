@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Network Check — диагностика пути</title>
+<title>Network Check — маршрут, утечки, достижимость</title>
 <style>
   :root{
     --bg:#0f1115; --card:#171a21; --line:#262b36; --fg:#e6e9ef; --dim:#8b93a7;
@@ -19,89 +19,114 @@
   .sub{ color:var(--dim); font-size:13px; margin:0 0 18px }
   .box{ background:var(--card); border:1px solid var(--line); border-radius:12px;
         padding:14px; margin-bottom:14px }
-  .box h2{ font-size:14px; margin:0 0 10px; text-transform:uppercase;
+  .box h2{ font-size:13px; margin:0 0 10px; text-transform:uppercase;
            letter-spacing:.5px; color:var(--dim) }
-  input,button,select{ font:inherit; width:100%; padding:11px 12px; border-radius:9px;
+  input,button{ font:inherit; width:100%; padding:11px 12px; border-radius:9px;
         border:1px solid var(--line); background:var(--bg); color:var(--fg); margin-bottom:9px }
   button{ background:var(--fg); color:var(--bg); font-weight:600; border:none; cursor:pointer }
   button:disabled{ opacity:.5 }
-  .row{ display:flex; gap:8px; align-items:center }
+  button.ghost{ background:transparent; color:var(--fg); border:1px solid var(--line) }
+  .row{ display:flex; gap:8px }
   .row > *{ margin-bottom:9px }
-  .badge{ display:inline-block; width:10px; height:10px; border-radius:50%; flex:0 0 auto }
+  .badge{ display:inline-block; width:10px; height:10px; border-radius:50%;
+          flex:0 0 auto; margin-top:6px }
   .ok{background:var(--ok)} .bad{background:var(--bad)} .skip{background:var(--skip)}
   .run{background:var(--warn)}
+  .kv{ display:flex; justify-content:space-between; gap:12px; padding:6px 0;
+       border-bottom:1px solid var(--line) }
+  .kv:last-child{ border-bottom:none }
+  .kv span:first-child{ color:var(--dim); font-size:13px }
+  .kv span:last-child{ font:13px ui-monospace,SFMono-Regular,Menlo,monospace;
+       text-align:right; word-break:break-all }
+  ul{ list-style:none; padding:0; margin:0 }
+  li{ display:flex; gap:9px; padding:8px 0; border-bottom:1px solid var(--line) }
+  li:last-child{ border-bottom:none }
   .host{ font:13px ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-all }
   .ms{ font:12px ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--dim) }
-  .msg{ font-size:13px; color:var(--dim); margin-top:3px }
-  ul{ list-style:none; padding:0; margin:0 }
-  li{ display:flex; gap:9px; padding:9px 0; border-bottom:1px solid var(--line) }
-  li:last-child{ border-bottom:none }
-  .note{ font-size:12px; color:var(--dim); line-height:1.45 }
+  .note{ font-size:12px; color:var(--dim); line-height:1.5 }
   .note strong{ color:var(--fg) }
-  .pill{ display:inline-block; font-size:11px; padding:2px 7px; border-radius:20px;
-         border:1px solid var(--line); color:var(--dim); margin-left:6px }
-  textarea{ width:100%; min-height:150px; font:11px ui-monospace,Menlo,monospace;
+  .verdict{ border-left:3px solid var(--warn); padding:9px 12px; margin-top:10px;
+            background:rgba(255,180,84,.07); border-radius:0 8px 8px 0; font-size:13px }
+  .verdict.good{ border-left-color:var(--ok); background:rgba(61,220,151,.07) }
+  .verdict.poor{ border-left-color:var(--bad); background:rgba(255,92,92,.07) }
+  textarea{ width:100%; min-height:160px; font:11px ui-monospace,Menlo,monospace;
             background:var(--bg); color:var(--fg); border:1px solid var(--line);
             border-radius:9px; padding:10px }
+  a{ color:var(--fg) }
 </style>
 </head>
 <body>
 
 <h1>Network Check</h1>
-<p class="sub">Диагностика сетевого пути с этого устройства</p>
+<p class="sub">Маршрут, утечки и достижимость доменов TikTok</p>
 
 <div class="box">
-  <h2>Что это не делает</h2>
+  <h2>Что эта страница не доказывает</h2>
   <div class="note">
-    <p><strong>Успешная проверка не означает, что TikTok заработает.</strong>
-    Она доказывает лишь, что один хост был достижим по этому пути в этот момент.</p>
-    <p><strong>Эта страница не видит трафик других приложений.</strong>
-    Она делает собственные запросы от вашего имени и ничего не перехватывает.</p>
-    <p><strong>Эта страница не определяет, включён ли VPN.</strong>
-    iOS не даёт обычному приложению такой информации. Судить по типу подключения —
-    значит гадать.</p>
+    <p><strong>Зелёный результат не означает, что TikTok заработает.</strong>
+    Страница показывает, куда уходит ваш трафик и какие хосты отвечают.
+    Она не выполняет запрос ленты: для неё нужна подпись X-Gorgon, которая
+    зависит от устройства и не подделывается из браузера.</p>
+    <p><strong>Она не видит трафик других приложений</strong> и ничего не
+    перехватывает — делает собственные запросы от вашего имени.</p>
+    <p><strong>Она не определяет, включён ли VPN.</strong> iOS не даёт обычному
+    приложению такой информации.</p>
   </div>
 </div>
 
 <div class="box">
-  <h2>Цель</h2>
-  <input id="host" placeholder="api-va.tiktokv.com" autocapitalize="off" autocorrect="off" spellcheck="false">
-  <div class="row">
-    <button id="run">Проверить</button>
-    <button id="runSet" style="background:transparent;color:var(--fg);border:1px solid var(--line)">Набор TikTok</button>
-  </div>
-  <div class="msg" id="hint">Проверяет достижимость и время отклика. Не показывает разбивку по DNS / TCP / TLS — браузер её не отдаёт.</div>
+  <h2>1. Куда уходит трафик</h2>
+  <div id="egress"><div class="kv"><span>проверяется…</span><span></span></div></div>
+  <div id="egressVerdict"></div>
 </div>
 
-<div class="box" id="out" hidden>
-  <h2>Результат</h2>
+<div class="box">
+  <h2>2. Утечки</h2>
+  <div id="leaks"></div>
+  <div class="note" style="margin-top:10px">
+    <p><strong>IPv6-утечка</strong> — самая частая причина «работающего»
+    туннеля, при котором приложение всё равно видит настоящий адрес.</p>
+    <p><strong>DNS-утечку из браузера измерить нельзя</strong>: браузер не
+    показывает, какой системный резолвер использовался. Проверьте на
+    <a href="https://ipleak.net" target="_blank" rel="noopener">ipleak.net</a>.</p>
+  </div>
+</div>
+
+<div class="box">
+  <h2>3. Достижимость доменов</h2>
+  <input id="host" placeholder="api-va.tiktokv.com" autocapitalize="off"
+         autocorrect="off" spellcheck="false">
+  <div class="row">
+    <button id="runSet">Проверить набор TikTok</button>
+  </div>
   <ul id="results"></ul>
 </div>
 
 <div class="box" id="cmp" hidden>
-  <h2>Сравнение с прошлым прогоном</h2>
+  <h2>Изменения с прошлого прогона</h2>
   <ul id="deltas"></ul>
 </div>
 
 <div class="box">
   <h2>Отчёт</h2>
   <div class="row">
-    <button id="copy" style="background:transparent;color:var(--fg);border:1px solid var(--line)">Скопировать</button>
-    <button id="clear" style="background:transparent;color:var(--fg);border:1px solid var(--line)">Очистить историю</button>
+    <button class="ghost" id="copy">Скопировать</button>
+    <button class="ghost" id="clear">Очистить историю</button>
   </div>
-  <textarea id="report" readonly placeholder="Отчёт появится здесь после проверки"></textarea>
+  <textarea id="report" readonly placeholder="появится после проверки"></textarea>
 </div>
 
 <script>
 "use strict";
 
+// ── Конфигурация ────────────────────────────────────────────────────────────
+
 // Хосты отобраны по результатам DNS-резолвера.
 //
-// ВАЖНО: apex-имена вроде www.tiktokcdn.com и www.byteoversea.com при
-// проверке вернули ПУСТОЙ ответ, а не NXDOMAIN. Пустой ответ не доказывает,
-// что A-записи не существует — резолвер мог просто отбросить запрос. Поэтому
-// они исключены: держать их в списке означало бы постоянный ложный «сбой».
-// Это консервативное решение, а не установленный факт.
+// ОСТОРОЖНО: при пустом ответе резолвера нельзя утверждать, что A-записи не
+// существует — запрос мог быть просто отброшен. Поэтому apex-имена вроде
+// www.tiktokcdn.com исключены: держать их в списке означало бы постоянный
+// ложный «сбой». Это консервативное решение, а не установленный факт.
 const TIKTOK_SET = [
   { host:"api-va.tiktokv.com",                  role:"API — лента" },
   { host:"api16-normal-c-useast1a.tiktokv.com", role:"API — лента" },
@@ -113,166 +138,234 @@ const TIKTOK_SET = [
 
 const CONTROL = { host:"www.cloudflare.com", role:"контроль" };
 
-const state = { prev: null };
+// Эндпоинты с CORS-заголовками — иначе тело ответа не прочитать из JS.
+const IP_CORS  = "https://ipinfo.io/ip";
+const GEO_CORS = "https://ipinfo.io/json";
+// IPv6-only. Успешное соединение доказывает наличие IPv6-выхода:
+// если бы IPv6 не работал, соединение не установилось бы вовсе.
+const V6_ONLY  = "https://api6.ipify.org";
+
+const KEY = "netdiag.web.v2";
 let lastResults = null;
-const KEY = "netdiag.web.v1";
+let lastEgress = null;
+let prevResults = null;
 
 const esc = s => String(s).replace(/[&<>"]/g, c =>
   ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
 
 /**
- * Один запрос с замером.
+ * Замер одного хоста.
  *
  * mode:'no-cors' — сознательный выбор: он даёт непрозрачный ответ, но
  * РАЗРЕШАЕТ его только если соединение прошло (TCP + TLS успешны). Отказ —
- * это сетевая ошибка. Обход CORS не обходит TLS и не ослабляет его.
+ * сетевая ошибка. Обход CORS не обходит TLS и не ослабляет его.
  */
 async function probe(host, timeoutMs = 9000) {
-  const url = "https://" + host + "/";
   const t0 = performance.now();
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), timeoutMs);
   try {
-    await fetch(url, {
+    await fetch("https://" + host + "/", {
       mode: "no-cors",
       cache: "no-store",
       referrerPolicy: "no-referrer",
       signal: ac.signal
     });
     clearTimeout(timer);
-    return { host, ok:true, ms: Math.round(performance.now() - t0),
-             how:"открыт", role:"" };
+    return { host, ok: true, ms: Math.round(performance.now() - t0),
+             how: "открыт", role: "" };
   } catch (e) {
     clearTimeout(timer);
     const ms = Math.round(performance.now() - t0);
-    const aborted = e && (e.name === "AbortError" || /abort/i.test(e.message||""));
-    return { host, ok:false, ms, aborted: !!aborted,
-             how: aborted ? "таймаут" : "не соединено", role:"" };
+    const aborted = e && (e.name === "AbortError" || /abort/i.test(e.message || ""));
+    return { host, ok: false, ms, aborted: !!aborted,
+             how: aborted ? "таймаут" : "не соединено", role: "" };
   }
 }
 
-function runBatch(items) {
-  const btn = document.getElementById("run");
-  btn.disabled = true;
+// ── Блок 1: исходящий адрес ────────────────────────────────────────────────
+
+async function readEgress() {
+  const out = { ip: null, country: null, city: null, v6: false, ipError: null };
+
+  try {
+    const r = await fetch(IP_CORS, { cache: "no-store", mode: "cors" });
+    const t = (await r.text()).trim();
+    if (/^[0-9a-f.:]+$/i.test(t)) out.ip = t;
+  } catch (e) { out.ipError = "не удалось определить"; }
+
+  try {
+    const r = await fetch(GEO_CORS, { cache: "no-store", mode: "cors" });
+    const j = await r.json();
+    out.country = j.country || null;
+    out.city = j.city || null;
+  } catch (e) { /* гео необязательно */ }
+
+  try {
+    await fetch(V6_ONLY, { mode: "no-cors", cache: "no-store" });
+    out.v6 = true;                      // соединение прошло => IPv6 есть
+  } catch (e) { out.v6 = false; }
+
+  return out;
+}
+
+function renderEgress(e) {
+  const rows = [];
+  rows.push(["Исходящий IPv4", e.ip || "не определён"]);
+  if (e.city || e.country) {
+    rows.push(["Гео по IP", [e.city, e.country].filter(Boolean).join(", ")]);
+  }
+  rows.push(["IPv6-выход", e.v6 ? "есть" : "нет"]);
+
+  document.getElementById("egress").innerHTML = rows
+    .map(([k, v]) => `<div class="kv"><span>${esc(k)}</span><span>${esc(v)}</span></div>`)
+    .join("");
+
+  // Verdict: описывает маршрут, а не результат в TikTok.
+  const box = document.getElementById("egressVerdict");
+  if (!e.ip) {
+    box.innerHTML = `<div class="verdict poor">Исходящий адрес определить не удалось —
+      сеть работает непредсказуемо.</div>`;
+  } else if (e.v6) {
+    box.innerHTML = `<div class="verdict">Обнаружен IPv6-выход.
+      Если туннель работает только по IPv4, настоящий адрес всё равно доступен
+      приложениям по IPv6. Проверьте, закрыт ли IPv6 в клиенте.</div>`;
+  } else {
+    box.innerHTML = `<div class="verdict good">Один исходящий адрес, IPv6 не течёт.</div>`;
+  }
+}
+
+// ── Блок 2: утечки ─────────────────────────────────────────────────────────
+
+function renderLeaks(e) {
+  const rows = [];
+  rows.push(["<span class='badge " + (e.v6 ? "bad" : "ok") + "'></span>",
+             "<div><div class='ms'>IPv6</div>" +
+             (e.v6
+               ? "<div class='note'>Выход есть. Туннель только на IPv4 его не скрывает.</div>"
+               : "<div class='note'>Выхода нет — утечки IPv6 не будет.</div>") +
+             "</div>"]);
+
+  rows.push(["<span class='badge skip'></span>",
+             "<div><div class='ms'>DNS</div>" +
+             "<div class='note'>Измеряется только на ipleak.net — браузер " +
+             "не сообщает, какой системный резолвер использовался.</div></div>"]);
+
+  document.getElementById("leaks").innerHTML = rows.map(r => "<li>" + r[0] + r[1] + "</li>").join("");
+}
+
+// ── Блок 3: достижимость ──────────────────────────────────────────────────
+
+async function runBatch(items) {
   const list = document.getElementById("results");
   list.innerHTML = "";
-  document.getElementById("out").hidden = false;
-
-  return (async () => {
-    const out = [];
-    for (const item of items) {
-      list.insertAdjacentHTML("beforeend",
-        `<li><span class="badge run"></span><div><div class="host">${esc(item.host)}</div>
-         <div class="ms">проверяется…</div></div></li>`);
-      const r = await probe(item.host);
-      r.role = item.role || "";
-      out.push(r);
-      const last = list.lastElementChild;
-      last.querySelector(".badge").className = "badge " + (r.ok ? "ok" : "bad");
-      last.querySelector(".ms").textContent =
-        (r.ok ? r.how + " · " + r.ms + " ms" : r.how + (r.ms ? " · " + r.ms + " ms" : ""))
-        + (r.role ? " · " + r.role : "");
-      await new Promise(r2 => setTimeout(r2, 120)); // не давить сеть
-    }
-    btn.disabled = false;
-    lastResults = out;
-    return out;
-  })();
-}
-
-function buildReport(results) {
-  const now = new Date().toISOString();
-  const ok = results.filter(r => r.ok).length;
-  const lines = [
-    "# Network check",
-    "",
-    "- Время: " + now,
-    "- Успешно: " + ok + " из " + results.length,
-    "- Направление: " + (navigator.onLine ? "есть" : "нет"),
-    "",
-    "Успешная проверка доказывает лишь то, что хост был достижим по этому пути",
-    "в этот момент. Она не означает, что достижим другой хост или конкретное",
-    "приложение. Эта страница не видит трафик других приложений.",
-    "",
-    "| Хост | Роль | Итог | мс |",
-    "|---|---|---|---|"
-  ];
-  for (const r of results) {
-    lines.push("| " + r.host + " | " + (r.role||"-") + " | " +
-      (r.ok ? "открыт" : r.how) + " | " + (r.ms||"-") + " |");
+  const out = [];
+  for (const item of items) {
+    list.insertAdjacentHTML("beforeend",
+      `<li><span class="badge run"></span><div><div class="host">${esc(item.host)}</div>
+       <div class="ms">проверяется…</div></div></li>`);
+    const r = await probe(item.host);
+    r.role = item.role || "";
+    out.push(r);
+    const last = list.lastElementChild;
+    last.querySelector(".badge").className = "badge " + (r.ok ? "ok" : "bad");
+    last.querySelector(".ms").textContent =
+      (r.ok ? r.how + " · " + r.ms + " ms" : r.how + (r.ms ? " · " + r.ms + " ms" : ""))
+      + (r.role ? " · " + r.role : "");
+    await new Promise(r2 => setTimeout(r2, 120));   // не давить сеть
   }
-  return lines.join("\n");
+  return out;
 }
+
+// ── Сравнение прогонов ─────────────────────────────────────────────────────
 
 function compare(prev, cur) {
-  const box = document.getElementById("cmp");
-  const list = document.getElementById("deltas");
   const before = {};
   for (const r of prev) before[r.host] = r;
   const rows = [];
-
   for (const r of cur) {
     const b = before[r.host];
-    if (!b) continue;
-    if (b.ok === r.ok) continue;
+    if (!b || b.ok === r.ok) continue;
     const dir = r.ok ? "заработал" : "сломался";
-    rows.push(`<li><span class="badge ${r.ok?"ok":"bad"}"></span><div>
+    rows.push(`<li><span class="badge ${r.ok ? "ok" : "bad"}"></span><div>
       <div class="host">${esc(r.host)}</div>
-      <div class="ms">${esc(dir)} · ${b.ok?"открыт":esc(b.how)} → ${r.ok?"открыт":esc(r.how)}</div>
-      </div></li>`);
+      <div class="ms">${esc(dir)} · ${b.ok ? "открыт" : esc(b.how)} → ${r.ok ? "открыт" : esc(r.how)}</div>
+    </div></li>`);
   }
-
-  if (!rows.length) {
-    box.hidden = false;
-    list.innerHTML = `<li><span class="badge skip"></span><div>
-      <div class="ms">Ни один хост не изменил доступность.</div></div></li>`;
-    return;
-  }
+  const box = document.getElementById("cmp");
   box.hidden = false;
-  list.innerHTML = rows.join("");
+  document.getElementById("deltas").innerHTML = rows.length ? rows.join("") :
+    `<li><span class="badge skip"></span><div><div class="ms">
+      Ни один хост не изменил доступность.</div></div></li>`;
 }
 
-function persist(results) {
-  try {
-    const prev = localStorage.getItem(KEY);
-    state.prev = prev ? JSON.parse(prev) : null;
-    localStorage.setItem(KEY, JSON.stringify(results));
-  } catch (_) { /* приватный режим — просто без сравнения */ }
+// ── Отчёт ──────────────────────────────────────────────────────────────────
+
+function buildReport(results, egress) {
+  const L = [];
+  L.push("# Network check");
+  L.push("");
+  L.push("- Время: " + new Date().toISOString());
+  L.push("- Исходящий IPv4: " + (egress.ip || "не определён"));
+  L.push("- Гео по IP: " + ([egress.city, egress.country].filter(Boolean).join(", ") || "—"));
+  L.push("- IPv6-выход: " + (egress.v6 ? "ЕСТЬ (возможна утечка)" : "нет"));
+  L.push("- Успешно хостов: " + results.filter(r => r.ok).length + " из " + results.length);
+  L.push("");
+  L.push("Зелёный результат означает только достижимость хоста.");
+  L.push("Он не доказывает, что TikTok отдаст актуальную ленту: запрос ленты");
+  L.push("требует подписи X-Gorgon, которая зависит от устройства.");
+  L.push("Эта страница не видит трафик других приложений.");
+  L.push("");
+  L.push("| Хост | Роль | Итог | мс |");
+  L.push("|---|---|---|---|");
+  for (const r of results) {
+    L.push("| " + r.host + " | " + (r.role || "-") + " | " +
+           (r.ok ? "открыт" : r.how) + " | " + (r.ms || "-") + " |");
+  }
+  return L.join("\n");
 }
 
-function finish() {
-  if (!lastResults) return;
-  document.getElementById("report").value = buildReport(lastResults);
-  if (state.prev) compare(state.prev, lastResults);
-}
-
-document.getElementById("run").addEventListener("click", async () => {
-  const h = document.getElementById("host").value.trim();
-  if (!h) return;
-  await runBatch([{ host: h, role: "" }]);
-  persist(lastResults);
-  finish();
-});
+// ── Действия ───────────────────────────────────────────────────────────────
 
 document.getElementById("runSet").addEventListener("click", async () => {
-  await runBatch([CONTROL].concat(TIKTOK_SET));
-  persist(lastResults);
-  finish();
+  const btn = document.getElementById("runSet");
+  btn.disabled = true;
+  const all = [CONTROL].concat(TIKTOK_SET);
+  lastResults = await runBatch(all);
+  lastEgress = await readEgress();
+  renderEgress(lastEgress);
+  renderLeaks(lastEgress);
+  document.getElementById("report").value = buildReport(lastResults, lastEgress);
+  try {
+    const p = localStorage.getItem(KEY);
+    if (p) prevResults = JSON.parse(p).results;
+    localStorage.setItem(KEY, JSON.stringify({ results: lastResults, egress: lastEgress }));
+  } catch (_) { /* приватный режим — без сравнения */ }
+  if (prevResults) compare(prevResults, lastResults);
+  btn.disabled = false;
+});
+
+document.getElementById("copy").addEventListener("click", async () => {
+  const t = document.getElementById("report");
+  if (!t.value) return;
+  try { await navigator.clipboard.writeText(t.value); } catch (_) { t.select(); }
 });
 
 document.getElementById("clear").addEventListener("click", () => {
   localStorage.removeItem(KEY);
   document.getElementById("report").value = "";
   document.getElementById("cmp").hidden = true;
-  document.getElementById("out").hidden = true;
+  prevResults = null;
 });
 
-function flash(text) {
-  const b = document.getElementById("copy");
-  const old = b.textContent;
-  b.textContent = text;
-  setTimeout(() => { b.textContent = old; }, 1400);
-}
+// Показать исходящий адрес сразу при открытии — это стоит один запрос
+// и сразу отвечает на главный вопрос «куда вообще уходит трафик».
+(async function init() {
+  const e = await readEgress();
+  lastEgress = e;
+  renderEgress(e);
+  renderLeaks(e);
+})();
 </script>
 </body>
 </html>

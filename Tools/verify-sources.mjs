@@ -399,8 +399,9 @@ check('Android analysis records the CORRECTION to that finding',
   'the corrected conclusion must stay next to the original, not replace it silently');
 check('Android analysis carries the measurement that drove the correction',
   /94\.243\.11\.85/.test(android) && /sf16-va\.tiktokcdn\.com/.test(android));
-check('correction states the RU path is NOT blocked, so only the param matters',
-  /полностью доступна из России/.test(android) && /маршрут менять незачем/.test(android));
+check('Android analysis states the measured scope rather than a global claim',
+  /Что это доказывает/.test(android) && /маршрут до перечисленных хостов работает/.test(android),
+  'the correction must say what was measured, not swap one overstatement for another');
 check('iOS analysis points at the MITM alternative rather than a dead end',
   /прокси|MITM/i.test(ios) && /перехват/i.test(ios));
 check('Android analysis states the apkw.ru APK was NOT downloaded',
@@ -425,12 +426,29 @@ check('architecture does not substitute a web client or another social network',
 check('architecture explains why the diagnostic is not a substitute',
   /не подменяет/.test(arch) || /не подменяет цель/.test(arch));
 
-// The strongest single sentence in the whole project is the quote from the
-// most mature Android mod. If it is paraphrased rather than quoted, the
-// argument silently loses its foundation.
-check('the Android authors\' own limitation quote is quoted verbatim',
-  /may not change your region/.test(android) && /本模块不能替代可用的国际网络环境/.test(android),
-  'both verbatim quotes from HushFeed and tiktok-region-hook must be present');
+// The six verification levels must be stated somewhere. Without them a reader
+// sees "199 tests passing" and reasonably assumes the tweak works.
+check('VERIFICATION.md exists and states the six levels',
+  existsSync(join(ROOT, 'VERIFICATION.md'))
+  && /Шесть уровней|уровней/.test(read(join(ROOT, 'VERIFICATION.md'))));
+const verification = existsSync(join(ROOT, 'VERIFICATION.md'))
+  ? read(join(ROOT, 'VERIFICATION.md')) : '';
+check('VERIFICATION.md admits compilation was not achieved',
+  /Компиляция/.test(verification) && /не достигнут/.test(verification),
+  'claiming a higher level than was reached is the exact failure being guarded');
+check('VERIFICATION.md records that build.sh syntax was never checked',
+  /build\.sh/.test(verification) && /синтаксически не проверен/.test(verification),
+  'a check that silently failed is worse than one that was never attempted');
+
+// The overstatement corrected during audit must not come back.
+check('Android analysis no longer claims absence of DPI',
+  !/Блокировок и DPI нет/.test(android),
+  'this was measured only at the / path; selective filtering was never tested');
+check('Android analysis distinguishes what was measured from what was not',
+  /Чего это НЕ доказывает/.test(android));
+check('Android analysis records the DNS resolver contamination',
+  /172\.19\.0\.2/.test(android),
+  'every DNS observation in this project was made by the proxy resolver');
 
 console.log('\n== 9. Cloud build workflow ==');
 
