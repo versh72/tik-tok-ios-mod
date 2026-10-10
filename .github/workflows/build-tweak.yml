@@ -42,6 +42,8 @@ jobs:
     steps:
       - name: Забрать исходники
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Показать окружение
         run: |
@@ -62,9 +64,15 @@ jobs:
         run: |
           set -euo pipefail
           export THEOS=/opt/theos
-          git clone --depth 1 https://github.com/theos/theos.git "$THEOS"
-          git -C "$THEOS" submodule update --init --recursive --depth 1
+          # Без --depth: shallow-клон тянет только последний коммит, и
+          # submodule update падает с 'did not contain <sha>' (exit 128).
+          # Полный клон надёжнее, а времени на раннере хватает с запасом.
+          git clone --recursive https://github.com/theos/theos.git "$THEOS"
+          git -C "$THEOS" submodule update --init --recursive
           echo "THEOS=$THEOS" >> "$GITHUB_ENV"
+          # Проверка, что тулчейн действительно на месте: без неё падение
+          # всплывёт позже, уже на шаге сборки, с невнятным сообщением.
+          test -d "$THEOS/makefiles" || { echo "::error::theos не установлен"; exit 1; }
 
       - name: Проверить, что ObjC-мост согласован с C-логикой
         # Ключевая идея: ObjC НЕ содержит собственной логики подмены,
@@ -82,8 +90,12 @@ jobs:
         working-directory: Tweak
         run: |
           set -euo pipefail
-          make clean PACKAGE_CONFIG=iphoneos/clang/arm64
-          make package PACKAGE_CONFIG=iphoneos/clang/arm64
+          # ARCHS=arm64 переопределяет значение из Makefile (там arm64 arm64e).
+          # Причина: приложение из App Store собрано под arm64 даже на A14,
+          # и arm64e для подмены не нужен. Смешивать нельзя — для arm64e
+          # требуется отдельный package-конфиг, иначе make package падает.
+          make clean
+          make package ARCHS=arm64 PACKAGE_CONFIG=iphoneos/clang/arm64
 
       - name: Проверить архитектуру бинарника
         run: |
