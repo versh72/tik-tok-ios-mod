@@ -30,3 +30,7 @@ Thumbs.db
 rl_test.exe
 rl_test.pdb
 rl_test.tmp
+
+# сборка Rust
+/target
+Cargo.lock

@@ -110,7 +110,7 @@ fn main() {
         ),
     };
 
-    let (out, _) = run(device_tool, &[]);
+    let (out, _) = run(&device_tool, &[]);
     // Успех — это строка вида "d3a4...", начинающаяся с 40 нулей при
     // отсутствии устройств. Любой непустой вывод означает, что телефон найден.
     let found = out
@@ -120,7 +120,14 @@ fn main() {
         .map(|s| s.to_string());
 
     match found {
-        Some(udid) => ok(&format!("телефон подключён: {}", &udid[..8.min(udid.len())])),
+        Some(udid) => {
+            // Обрезаем по символам, а не по байтам: срез по байту
+            // попадает внутрь многобайтового UTF-8 символа и роняет
+            // программу. Раньше так и происходило — падение на первом
+            // же шаге, до всей работы.
+            let short: String = udid.chars().take(8).collect();
+            ok(&format!("телефон подключён: {}", short))
+        }
         None => fail(
             "телефон не найден. Проверь три вещи:\n\
              \n\
@@ -229,7 +236,7 @@ fn main() {
     args.push(output.to_string_lossy().to_string());
     args.push(input.to_string_lossy().to_string());
 
-    let (log, code) = run_owned(zsign, args);
+    let (log, code) = run_owned(&zsign, args);
 
     if code != 0 || !output.exists() {
         println!("{}", log);
@@ -250,7 +257,7 @@ fn main() {
         ),
     };
 
-    let (log, code) = run_owned(installer, vec!["-i".into(), output.to_string_lossy().to_string()]);
+    let (log, code) = run_owned(&installer, vec!["-i".into(), output.to_string_lossy().to_string()]);
 
     line();
     if code == 0 {
@@ -260,7 +267,7 @@ fn main() {
         say("Подменённый регион — Япония.");
         say("");
         say("Если что-то пойдёт не так, напиши в консоль:");
-        say("  {}", log.trim());
+        say(&format!("  {}", log.trim()));
     } else {
         println!("{}", log);
         fail("не получилось поставить на телефон.");
