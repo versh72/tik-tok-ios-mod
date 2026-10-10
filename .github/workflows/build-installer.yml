@@ -68,10 +68,20 @@ jobs:
       - name: Собрать всё в один архив
         shell: pwsh
         run: |
-          Copy-Item LICENSE out\ -ErrorAction SilentlyContinue
-          # insert-dylib кладём рядом: обёртка вызывает его сама,
-          # пользователю не нужно знать, что он существует.
-          Compress-Archive -Path out\* -DestinationPath tiktok-region-installer-windows.zip
+          # В out лежит мусор от cargo: target, .pdb, исходники крейта.
+          # Пользователю это не нужно, поэтому собираем чистую папку.
+          $stage = "dist"
+          if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+          Copy-Item out\insert-dylib.exe $stage\
+          Copy-Item out\tiktok-region-installer.exe $stage\
+          Copy-Item LICENSE $stage\
+          Copy-Item README-INSTALL.md $stage\
+
+          # Всё вместе — 500 КБ вместо 4.5 МБ
+          Compress-Archive -Path "$stage\*" `
+                            -DestinationPath tiktok-region-installer-windows.zip
           Get-Item tiktok-region-installer-windows.zip | Select-Object Name, Length
 
       - name: Отдать установщик
