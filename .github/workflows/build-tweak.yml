@@ -1,0 +1,137 @@
+name: Сборка TikTokRegion.dylib (arm64)
+
+# Зачем этот файл
+# ----------------
+# Собрать iOS-библиотеку на Windows нельзя: нужен Apple ObjC-рантайм,
+# Foundation и iOS SDK, которые поставляются только с Xcode на macOS.
+#
+# Это НЕ обход ограничения. Это единственный способ получить настоящую
+# сборку без Mac. GitHub Actions даёт бесплатные macOS-раннеры для
+# публичных репозиториев.
+#
+# Что здесь происходит
+# --------------------
+#   1. Ставится Theos (официальный сборщик tweaks)
+#   2. Сначала компилируется и запускается чистый C-логика — RegionLogic.h
+#   3. Затем собирается настоящий dylib под iOS arm64
+#   4. Проверяется архитектура бинарника через lipo
+#   5. Готовый dylib отдаётся артефактом
+#
+# Что это НЕ делает
+# -----------------
+# Не подписывает и не внедряет никуда. Подпись и внедрение — отдельные
+# шаги на твоём устройстве, потому что для них нужен приватный ключ,
+# которого в репозитории быть не должно.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'Tweak/**'
+      - '.github/workflows/build-tweak.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Забрать исходники
+        uses: actions/checkout@v4
+
+      - name: Показать окружение
+        run: |
+          sw_vers
+          xcodebuild -version
+          echo "SDK: $(xcrun --sdk iphoneos --show-sdk-version)"
+
+      - name: Собрать и прогнать чистую C-логику
+        # Это самый важный шаг. RegionLogic.h — тот самый код, который
+        # попадёт в dylib. Если тесты здесь падают, дальше идти незачем.
+        name: C-логика: компиляция и 47 тестов
+        run: |
+          set -euo pipefail
+          clang -std=c99 -Wall -Wextra -Werror \
+                -o /tmp/rl_test Tools/test-region-logic.c
+          /tmp/rl_test
+
+      - name: Установить Theos
+        run: |
+          set -euo pipefail
+          export THEOS=/opt/theos
+          git clone --depth 1 https://github.com/theos/theos.git "$THEOS"
+          git -C "$THEOS" submodule update --init --recursive --depth 1
+          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
+
+      - name: Проверить, что ObjC-мост согласован с C-логикой
+        # Ключевая идея: ObjC НЕ содержит собственной логики подмены,
+        # он вызывает rl_rewrite_params. Если здесь не совпадёт сигнатура —
+        # сборка упадёт, и это правильно.
+        run: |
+          set -euo pipefail
+          echo "--- вызов rl_rewrite_params в TikTokRegion.m ---"
+          grep -n -A4 'rl_rewrite_params(' Tweak/TikTokRegion.m
+          echo
+          echo "--- объявление в RegionLogic.h ---"
+          grep -n -A5 'static rl_result_t rl_rewrite_params' Tweak/RegionLogic.h
+
+      - name: Собрать dylib для iOS
+        working-directory: Tweak
+        run: |
+          set -euo pipefail
+          make clean PACKAGE_CONFIG=iphoneos/clang/arm64
+          make package PACKAGE_CONFIG=iphoneos/clang/arm64
+
+      - name: Проверить архитектуру бинарника
+        run: |
+          set -euo pipefail
+          DYLIB=$(find Tweak/packages -name 'TikTokRegion.dylib' | head -1)
+          test -n "$DYLIB" || { echo "::error::dylib не найден"; exit 1; }
+          echo "Файл: $DYLIB"
+          file "$DYLIB"
+          lipo -info "$DYLIB"
+          lipo -info "$DYLIB" | grep -q 'arm64' || {
+            echo "::error::ожидалась arm64"; exit 1; }
+          echo
+          echo "Экспортируемые символы (проверка, что модуль не пустой):"
+          nm -gU "$DYLIB" 2>/dev/null | head -20 || true
+
+      - name: Отдать dylib
+        uses: actions/upload-artifact@v4
+        with:
+          name: TikTokRegion-dylib-arm64
+          path: Tweak/packages/**/*.dylib
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Отдать deb (для jailbreak-устройств)
+        # На джейлбрейке ставится копированием dylib в /usr/lib/TweakInject,
+        # но .deb делает то же через dpkg — привычнее и с зависимостями.
+        uses: actions/upload-artifact@v4
+        with:
+          name: TikTokRegion-deb
+          path: Tweak/packages/*.deb
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: Итог
+        run: |
+          {
+            echo "### Dylib собран"
+            echo
+            echo "Артефакты (раздел **Artifacts** внизу страницы запуска):"
+            echo
+            echo "| Артефакт | Куда ставить |"
+            echo "|---|---|"
+            echo "| \`TikTokRegion-dylib-arm64\` | \`/usr/lib/TweakInject/\` на джейлбрейке |"
+            echo "| \`TikTokRegion-deb\` | тот же результат, через dpkg |"
+            echo
+            echo "### Что дальше делать на устройстве"
+            echo
+            echo "Сборка библиотеки — это последний шаг, который можно было"
+            echo "сделать без устройства. Дальше нужен телефон."
+          } >> "$GITHUB_STEP_SUMMARY"

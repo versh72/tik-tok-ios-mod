@@ -26,3 +26,7 @@ xcuserdata/
 # OS noise
 .DS_Store
 Thumbs.db
+# артефакты сборки C-тестов
+rl_test.exe
+rl_test.pdb
+rl_test.tmp
