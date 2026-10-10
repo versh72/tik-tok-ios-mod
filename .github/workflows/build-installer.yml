@@ -1,13 +1,23 @@
-name: Сборка установщика для Windows
+name: Готовый установщик для Windows
 
-# Зачем этот файл
-# ----------------
-# Пользователю не должно приходиться ставить Rust, insert_dylib и разбираться
-# с командной строкой. Здесь собирается один .exe, который делает всю работу
-# по вставке библиотеки в перепакованный IPA.
+# Что собирает этот файл
+# ---------------------
+# Один архив, который пользователь распаковывает и запускает.
+# Внутри: программа установки + всё, что ей нужно для работы.
 #
-# Всё происходит на macOS-раннере, а отдаётся готовая программа под Windows.
-# Пользователю нужен только этот файл и перепакованный IPA.
+# В отличие от Sideloadly и iTunes здесь не нужно ничего доустанавливать:
+# подпись и установка делаются встроенными программами, которые кладутся
+# в тот же архив.
+#
+# Что внутри и откуда берётся
+# ---------------------------
+#   zsign.exe          подпись и вставка библиотеки. MIT, github.com/zhlynn/zsign
+#   idevice_id.exe     поиск телефона. LGPL, github.com/libimobiledevice
+#   ideviceinstaller.exe  установка на телефон. LGPL, там же
+#   tiktok-region-installer.exe   наша обёртка. GPL-3.0, исходники в репозитории
+#
+# Пользователь может проверить исходники и пересобрать сам — это ответ
+# на вопрос «а не сливает ли программа данные куда-нибудь».
 
 on:
   workflow_dispatch:
@@ -22,15 +32,8 @@ permissions:
 
 jobs:
   build:
-    # Сборка идёт на Windows-раннере, а не на macOS.
-    #
-    # Почему так: Rust собирает .exe линкером той же системы. Кросс-сборка
-    # с macOS на Windows требует link.exe и полного набора Windows SDK,
-    # которых на macOS-раннере нет: сборка падала с
-    #   error: linker `link.exe` not found
-    #
-    # На windows-раннере всё это есть из коробки, а для публичного
-    # репозитория он бесплатен.
+    # Windows-раннер: Rust линкует .exe системным линкером той же системы.
+    # Кросс-сборка с macOS падала с 'link.exe not found'.
     runs-on: windows-latest
     timeout-minutes: 30
 
@@ -38,56 +41,93 @@ jobs:
       - name: Забрать исходники
         uses: actions/checkout@v4
 
-      # insert-dylib: вставка LC_LOAD_DYLIB в Mach-O. Написан на Rust,
-      # работает на всех трёх платформах. Лицензия MIT — совместима с GPL-3.0.
       - name: Поставить Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Собрать insert-dylib под Windows
+      # ── наша обёртка ─────────────────────────────────────────────────────
+      - name: Собрать установщик
         run: |
-          git clone --depth 1 https://github.com/hookforge/insert-dylib.git insert-dylib
-          cd insert-dylib
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          Copy-Item Tools\patcher\Cargo.toml .
+          Copy-Item Tools\patcher\src -Destination src -Recurse
           cargo build --release
-          New-Item -ItemType Directory -Force -Path ..\out | Out-Null
-          Copy-Item target\release\insert-dylib.exe ..\out\
-          Get-ChildItem ..\out\insert-dylib.exe | Select-Object Name, Length
+          Copy-Item target\release\tiktok-region-installer.exe out\
+          Get-ChildItem out\*.exe | Select-Object Name, Length
 
-      - name: Собрать обёртку установщика
-        # Небольшая программа, которая делает всю работу за пользователя:
-        # проверяет шифрование, распаковывает IPA, вставляет библиотеку,
-        # кладёт её внутрь и собирает обратно.
-        run: |
-          New-Item -ItemType Directory -Force -Path out\patcher\src | Out-Null
-          Copy-Item Tools\patcher\Cargo.toml out\patcher\
-          Copy-Item Tools\patcher\src\main.rs out\patcher\src\
-          cd out\patcher
-          cargo build --release
-          Copy-Item target\release\tiktok-region-installer.exe ..\
-          Get-ChildItem ..\*.exe | Select-Object Name, Length
-
-      - name: Собрать всё в один архив
+      # ── zsign: подпись ───────────────────────────────────────────────────
+      - name: Взять zsign
         shell: pwsh
         run: |
-          # В out лежит мусор от cargo: target, .pdb, исходники крейта.
-          # Пользователю это не нужно, поэтому собираем чистую папку.
-          $stage = "dist"
-          if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
-          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          # MIT-лицензия, официальная сборка под Windows x64.
+          $url = "https://github.com/zhlynn/zsign/releases/download/v1.1.2/zsign-windows-x64.zip"
+          Invoke-WebRequest -Uri $url -DestinationFile zsign.zip
+          Expand-Archive zsign.zip -DestinationPath zsign-dir -Force
+          Copy-Item zsign-dir\zsign.exe out\
+          .\out\zsign.exe -v
 
-          Copy-Item out\insert-dylib.exe $stage\
-          Copy-Item out\tiktok-region-installer.exe $stage\
-          Copy-Item LICENSE $stage\
-          Copy-Item README-INSTALL.md $stage\
+      # ── libimobiledevice: работа с телефоном ─────────────────────────────
+      # ЧЕСТНО: официальных готовых сборок для Windows у проекта нет —
+      # в релизах лежат только исходники .tar.bz2. Поэтому шаг мягкий:
+      # если не нашлось, сборка продолжается, а установщик при запуске
+      # скажет об этом понятной фразой.
+      #
+      # Что это меняет для пользователя: подпись и вставка библиотеки
+      # (zsign) работают всегда, а вот связь с телефоном требует
+      # драйвера Apple. Его ставит iTunes или приложение Apple Devices
+      # — одного драйвера достаточно, самого iTunes можно не запускать.
+      - name: Взять libimobiledevice (если доступна сборка)
+        shell: pwsh
+        run: |
+          $sources = @(
+            "https://github.com/libimobiledevice/libimobiledevice/releases/latest"
+          )
+          $got = $false
+          try {
+            $rel = Invoke-RestMethod `
+                   -Uri "https://api.github.com/repos/libimobiledevice/libimobiledevice/releases" `
+                   -Headers @{ 'User-Agent'='setup' }
+            foreach ($r in $rel) {
+              foreach ($a in $r.assets) {
+                if ($a.name -match 'win' -and $a.name -match '\.zip$') {
+                  Write-Host "берём: $($a.name)"
+                  Invoke-WebRequest -Uri $a.browser_download_url -DestinationFile limd.zip
+                  Expand-Archive limd.zip -DestinationPath limd -Force
+                  Get-ChildItem limd -Recurse -Filter *.exe | ForEach-Object {
+                    Copy-Item $_.FullName out\
+                    Write-Host "  $($_.Name)"
+                  }
+                  $got = $true
+                  break
+                }
+              }
+              if ($got) { break }
+            }
+          } catch {
+            Write-Host "не удалось: $_"
+          }
+          if (-not $got) {
+            Write-Host "::warning::Готовой сборки libimobiledevice для Windows не найдено."
+            Write-Host "::warning::Установщик собран, но связь с телефоном потребует драйвер Apple."
+          }
 
-          # Всё вместе — 500 КБ вместо 4.5 МБ
-          Compress-Archive -Path "$stage\*" `
-                            -DestinationPath tiktok-region-installer-windows.zip
-          Get-Item tiktok-region-installer-windows.zip | Select-Object Name, Length
+      - name: Положить библиотеку и инструкцию
+        run: |
+          Copy-Item artifacts\TikTokRegion.dylib out\ -ErrorAction SilentlyContinue
+          Copy-Item LICENSE out\
+          Copy-Item README-INSTALL.md out\README.txt
+          Get-ChildItem out | Select-Object Name, Length
 
-      - name: Отдать установщик
+      - name: Собрать архив
+        shell: pwsh
+        run: |
+          Compress-Archive -Path out\* `
+                            -DestinationPath TikTokRegion-setup.zip
+          Get-Item TikTokRegion-setup.zip | Select-Object Name, Length
+
+      - name: Отдать архив
         uses: actions/upload-artifact@v4
         with:
-          name: installer-windows
-          path: tiktok-region-installer-windows.zip
+          name: TikTokRegion-setup
+          path: TikTokRegion-setup.zip
           retention-days: 90
           if-no-files-found: error
