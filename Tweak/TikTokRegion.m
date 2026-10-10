@@ -210,23 +210,17 @@ static BOOL gSkipSSL = YES;
         // Вход 1: собственный HTTP-класс TikTok
         Class task = NSClassFromString(@"TTHttpTask");
         TTHook(task, NSSelectorFromString(@"setSkipSSLCertificateError:"),
-               imp_implementationWithBlock(^(id self, BOOL value) {
-            if (gSkipSSL) {
-                // Вызываем оригинал, но всегда с YES
-                IMP original = [gOriginalIMP[[NSValue valueWithPointer:NSSelectorFromString(@"setSkipSSLCertificateError:")]] pointerValue];
-                if (original) {
-                    ((void (*)(id, SEL, BOOL))original)(self, _cmd, YES);
-                }
-                return;
+               imp_implementationWithBlock(^(id self, SEL _cmd, BOOL value) {
+            IMP original = [gOriginalIMP[[NSValue valueWithPointer:(void *)_cmd]] pointerValue];
+            if (original) {
+                ((void (*)(id, SEL, BOOL))original)(self, _cmd, gSkipSSL ? YES : value);
             }
-            IMP original = [gOriginalIMP[[NSValue valueWithPointer:_cmd]] pointerValue];
-            if (original) ((void (*)(id, SEL, BOOL))original)(self, _cmd, value);
         }));
 
         Class chromium = NSClassFromString(@"TTNetworkManagerChromium");
         TTHook(chromium, NSSelectorFromString(@"setSkipSSLCertificateError:"),
-               imp_implementationWithBlock(^(id self, BOOL value) {
-            IMP original = [gOriginalIMP[[NSValue valueWithPointer:_cmd]] pointerValue];
+               imp_implementationWithBlock(^(id self, SEL _cmd, BOOL value) {
+            IMP original = [gOriginalIMP[[NSValue valueWithPointer:(void *)_cmd]] pointerValue];
             ((void (*)(id, SEL, BOOL))original)(self, _cmd, gSkipSSL ? YES : value);
         }));
 
@@ -292,8 +286,8 @@ static NSString *gCurrentRequestPath = nil;
                 if (method_getNumberOfArguments(methods[i]) < 3) continue;
 
                 // (Map, boolean)V — параметры Map первым
-                TTHook(cls, sel, imp_implementationWithBlock(^(id _self, id _cmd, NSMutableDictionary *params, id flag) {
-                    IMP original = [gOriginalIMP[[NSValue valueWithPointer:_cmd]] pointerValue];
+                TTHook(cls, sel, imp_implementationWithBlock(^(id _self, SEL _cmd, NSMutableDictionary *params, id flag) {
+                    IMP original = [gOriginalIMP[[NSValue valueWithPointer:(void *)_cmd]] pointerValue];
                     ((void (*)(id, SEL, id, id))original)(_self, (SEL)_cmd, params, flag);
 
                     /* Определяем, является ли этот запрос входом в аккаунт.
@@ -344,8 +338,8 @@ static NSString *gCurrentRequestPath = nil;
                 if (![name2 hasSuffix:@"path:"]) continue;
                 if (method_getNumberOfArguments(methods[i]) < 3) continue;
 
-                TTHook(cls, sel, imp_implementationWithBlock(^(id _self, id _cmd, NSString *path) {
-                    IMP original = [gOriginalIMP[[NSValue valueWithPointer:_cmd]] pointerValue];
+                TTHook(cls, sel, imp_implementationWithBlock(^(id _self, SEL _cmd, NSString *path) {
+                    IMP original = [gOriginalIMP[[NSValue valueWithPointer:(void *)_cmd]] pointerValue];
                     ((void (*)(id, SEL, id))original)(_self, (SEL)_cmd, path);
 
                     /* Сохраняем путь в параметрах, чтобы tt_rewriteParams
@@ -380,7 +374,7 @@ static NSString *gCurrentRequestPath = nil;
             if (!cls) continue;
             for (NSString *selName in regionSelectors) {
                 SEL sel = NSSelectorFromString(selName);
-                TTHook(cls, sel, imp_implementationWithBlock(^(id _self, id _cmd) {
+                TTHook(cls, sel, imp_implementationWithBlock(^(id _self, SEL _cmd) {
                     return lower;
                 }));
             }
@@ -498,9 +492,9 @@ static NSString *gCurrentRequestPath = nil;
 
         // mobileprovision отсутствует у переподписанной сборки. TikTok это видит.
         TTHook([NSBundle class], NSSelectorFromString(@"pathForResource:ofType:"),
-               imp_implementationWithBlock(^(id _self, id _cmd, NSString *name, NSString *ext) {
+               imp_implementationWithBlock(^(id _self, SEL _cmd, NSString *name, NSString *ext) {
             if ([name isEqualToString:@"mobileprovision"]) return nil;
-            IMP original = [gOriginalIMP[[NSValue valueWithPointer:_cmd]] pointerValue];
+            IMP original = [gOriginalIMP[[NSValue valueWithPointer:(void *)_cmd]] pointerValue];
             return ((id (*)(id, SEL, id, id))original)(_self, (SEL)_cmd, name, ext);
         }));
 
@@ -532,8 +526,8 @@ static NSString *gCurrentRequestPath = nil;
         // После переподписи она другая, и проверка это видит.
         TTHook(NSClassFromString(@"AWESecurityConfig"),
                NSSelectorFromString(@"licenseForAppId:"),
-               imp_implementationWithBlock(^id(id _self, id _cmd, id appId) {
-            IMP original = [gOriginalIMP[[NSValue valueWithPointer:_cmd]] pointerValue];
+               imp_implementationWithBlock(^id(id _self, SEL _cmd, id appId) {
+            IMP original = [gOriginalIMP[[NSValue valueWithPointer:(void *)_cmd]] pointerValue];
             return ((id (*)(id, SEL, id))original)(_self, (SEL)_cmd, appId);
         }));
 
@@ -574,11 +568,11 @@ static NSString *gCurrentRequestPath = nil;
             @"/Applications/Sileo.app", @"/var/jb",
         ];
         TTHook([NSFileManager class], NSSelectorFromString(@"fileExistsAtPath:"),
-               imp_implementationWithBlock(^(id _self, id _cmd, NSString *path) {
+               imp_implementationWithBlock(^(id _self, SEL _cmd, NSString *path) {
             if ([path isKindOfClass:[NSString class]] && [paths containsObject:path]) {
                 return NO;
             }
-            IMP original = [gOriginalIMP[[NSValue valueWithPointer:_cmd]] pointerValue];
+            IMP original = [gOriginalIMP[[NSValue valueWithPointer:(void *)_cmd]] pointerValue];
             return ((BOOL (*)(id, SEL, id))original)(_self, (SEL)_cmd, path);
         }));
 

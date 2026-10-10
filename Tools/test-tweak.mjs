@@ -157,6 +157,36 @@ check('_cmd никогда не передаётся в вызов IMP без п
 check('оригинальный IMP вызывается с _self и (SEL)_cmd',
   /\)\(_self, \(SEL\)_cmd,/.test(src));
 
+// Шим компилируется без ARC, поэтому настоящий iOS SDK ловит то, чего
+// шим не может. Два класса ошибок были найдены именно в CI:
+//
+//  1. ARC запрещает неявное приведение id к SEL. Лечится объявлением
+//     параметра блока как SEL, а не id.
+//  2. Если блок объявлен без параметра _cmd, обращение к нему внутри —
+//     обращение к переменной чужой области видимости. Компилятор это
+//     ловит, но только настоящий: шим проходит.
+//
+// Проверяем структурно, чтобы баг не вернулся незаметно.
+const blockDecls = [...src.matchAll(/imp_implementationWithBlock\(\^[^)]*?\(([^)]*)\)/g)];
+check('блоки-хуки объявлены (нужно для проверки параметров)',
+  blockDecls.length > 0);
+
+const usesCmdInBody = blockDecls.filter(m => {
+  // Внутри тела блока ищем _cmd; если в сигнатуре его нет — ошибка области
+  const sig = m[1];
+  const start = src.indexOf(m[0]) + m[0].length;
+  const end = src.indexOf('}))', start);
+  const body = src.slice(start, end > 0 ? end : start + 600);
+  return /_cmd/.test(body) && !/_cmd/.test(sig);
+});
+check('ни один блок не использует _cmd без объявления в сигнатуре',
+  usesCmdInBody.length === 0,
+  `${usesCmdInBody.length} блок(ов) ссылаются на _cmd, которого у них нет`);
+
+check('_cmd объявляется как SEL, а не как id',
+  !/imp_implementationWithBlock\(\^[^)]*\(\s*id\s+_self\s*,\s*id\s+_cmd/.test(src),
+  'ARC не даст неявно привести id к SEL: нужен тип SEL в сигнатуре');
+
 const sh = readFileSync(join(ROOT, 'Tweak/build.sh'), 'utf8');
 check('build script refuses an encrypted IPA',
   /cryptid/.test(sh) && /РАСШИФРОВАННЫЙ/.test(sh),
@@ -187,8 +217,8 @@ console.log('\n== 9. The tested code IS the shipped code ==');
 const regionLogicH = readFileSync(join(ROOT, 'Tweak/RegionLogic.h'), 'utf8');
 
 check('TikTokRegion.m includes RegionLogic.h',
-  src.includes('../RegionLogic.h'),
-  'without this the dylib carries its own copy of the rules');
+  /#import\s+"RegionLogic\.h"/.test(src),
+  'the dylib must carry the tested C rules, not a second copy');
 check('tt_rewriteParams delegates to rl_rewrite_params',
   /rl_rewrite_params\s*\(/.test(src),
   'the C layer under test must be the one that runs');
