@@ -60,7 +60,7 @@ jobs:
         run: |
           # MIT-лицензия, официальная сборка под Windows x64.
           $url = "https://github.com/zhlynn/zsign/releases/download/v1.1.2/zsign-windows-x64.zip"
-          Invoke-WebRequest -Uri $url -DestinationFile zsign.zip
+          Invoke-WebRequest -Uri $url -OutFile zsign.zip
           Expand-Archive zsign.zip -DestinationPath zsign-dir -Force
           Copy-Item zsign-dir\zsign.exe out\
           .\out\zsign.exe -v
@@ -90,7 +90,7 @@ jobs:
               foreach ($a in $r.assets) {
                 if ($a.name -match 'win' -and $a.name -match '\.zip$') {
                   Write-Host "берём: $($a.name)"
-                  Invoke-WebRequest -Uri $a.browser_download_url -DestinationFile limd.zip
+                  Invoke-WebRequest -Uri $a.browser_download_url -OutFile limd.zip
                   Expand-Archive limd.zip -DestinationPath limd -Force
                   Get-ChildItem limd -Recurse -Filter *.exe | ForEach-Object {
                     Copy-Item $_.FullName out\
