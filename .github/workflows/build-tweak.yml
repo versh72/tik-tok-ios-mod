@@ -9,19 +9,27 @@ name: Сборка TikTokRegion.dylib (arm64)
 # сборку без Mac. GitHub Actions даёт бесплатные macOS-раннеры для
 # публичных репозиториев.
 #
+# Почему clang, а не theos
+# -----------------------
+# theos — это сборщик пакетов: он нужен, чтобы завернуть результат в
+# .deb с зависимостями и полями для Cydia. Здесь это лишнее: для
+# подмены требуется голый .dylib, который потом вставляется в IPA
+# через insert_dylib. Сборка напрямую clang короче, быстрее и не
+# зависит от того, какие make-файлы Theos подключает при заданных
+# переменных. Проблем с целевой целью package уже не возникает.
+#
 # Что здесь происходит
 # --------------------
-#   1. Ставится Theos (официальный сборщик tweaks)
-#   2. Сначала компилируется и запускается чистый C-логика — RegionLogic.h
-#   3. Затем собирается настоящий dylib под iOS arm64
-#   4. Проверяется архитектура бинарника через lipo
+#   1. C-логика: clang -Werror + 47 тестов ДО сборки
+#   2. ObjC-мост: тот же файл компилируется под настоящий iOS SDK
+#   3. lipo: проверка, что бинарник действительно arm64
+#   4. otool: проверка зависимостей и install_name
 #   5. Готовый dylib отдаётся артефактом
 #
 # Что это НЕ делает
 # -----------------
-# Не подписывает и не внедряет никуда. Подпись и внедрение — отдельные
-# шаги на твоём устройстве, потому что для них нужен приватный ключ,
-# которого в репозитории быть не должно.
+# Не подписывает и не внедряет. Подпись и внедрение идут на устройстве:
+# ключа для подписи в репозитории быть не должно.
 
 on:
   workflow_dispatch:
@@ -42,116 +50,114 @@ jobs:
     steps:
       - name: Забрать исходники
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Показать окружение
         run: |
           sw_vers
           xcodebuild -version
-          echo "SDK: $(xcrun --sdk iphoneos --show-sdk-version)"
+          echo "iphoneos SDK: $(xcrun --sdk iphoneos --show-sdk-version)"
 
-      # Это самый важный шаг. RegionLogic.h — тот самый код, который
-      # попадёт в dylib. Если тесты здесь падают, дальше идти незачем.
       - name: C-логика — компиляция и 47 тестов
+        # Самый важный шаг. RegionLogic.h — тот самый код, что попадёт
+        # в dylib. Если тесты падают, дальше идти незачем.
         run: |
           set -euo pipefail
           clang -std=c99 -Wall -Wextra -Werror \
                 -o /tmp/rl_test Tools/test-region-logic.c
           /tmp/rl_test
 
-      - name: Установить Theos
+      - name: Проверить, что ObjC-мост берёт логику из C, а не дублирует её
+        # Ключевая идея проекта: ObjC не содержит собственной логики
+        # подмены. Если это перестанет быть так, тесты выше перестанут
+        # проверять то, что реально уедет в dylib.
         run: |
           set -euo pipefail
-          # ВАЖНО: путь должен быть в домашнем каталоге. /opt требует прав
-          # root, которых на раннере нет: git падает с
-          # "could not create work tree dir '/opt/theos': Permission denied"
-          # и вся сборка уходит в exit 128.
-          export THEOS="$HOME/theos"
-          # Полный клон: с --depth submodule update падает с
-          # 'did not contain <sha>', потому что shallow тянет один коммит.
-          git clone --recursive https://github.com/theos/theos.git "$THEOS"
-          git -C "$THEOS" submodule update --init --recursive
-          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
-          # Проверка, что тулчейн на месте: иначе падение всплывёт позже,
-          # уже на шаге сборки, с невнятным сообщением.
-          test -d "$THEOS/makefiles" || { echo "::error::theos не установлен"; exit 1; }
-          echo "theos установлен: $THEOS"
+          grep -q 'rl_rewrite_params' Tweak/TikTokRegion.m || {
+            echo "::error::ObjC-мост не вызывает C-логику"; exit 1; }
+          echo "мост использует rl_rewrite_params из RegionLogic.h"
 
-      - name: Проверить, что ObjC-мост согласован с C-логикой
-        # Ключевая идея: ObjC НЕ содержит собственной логики подмены,
-        # он вызывает rl_rewrite_params. Если здесь не совпадёт сигнатура —
-        # сборка упадёт, и это правильно.
+      - name: Собрать dylib под iOS arm64
         run: |
           set -euo pipefail
-          echo "--- вызов rl_rewrite_params в TikTokRegion.m ---"
-          grep -n -A4 'rl_rewrite_params(' Tweak/TikTokRegion.m
-          echo
-          echo "--- объявление в RegionLogic.h ---"
-          grep -n -A5 'static rl_result_t rl_rewrite_params' Tweak/RegionLogic.h
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          mkdir -p out
 
-      - name: Собрать dylib для iOS
-        working-directory: Tweak
-        run: |
-          set -euo pipefail
-          echo "theos = $THEOS"
-          xcodebuild -version
-          echo "iphoneos SDK = $(xcrun --sdk iphoneos --show-sdk-version)"
-          # ARCHS=arm64 переопределяет значение из Makefile (там arm64 arm64e).
-          # Причина: приложение из App Store собрано под arm64 даже на A14,
-          # и arm64e для подмены не нужен. Смешивать нельзя — для arm64e
-          # требуется отдельный package-конфиг, иначе make package падает.
-          # Без make clean: на свежем раннере чистить нечего, а internal-clean
-          # в Theos спотыкается об пустые переменные окружения
-          # ("rm: : No such file or directory") и роняет всю сборку.
-          make package ARCHS=arm64 PACKAGE_CONFIG=iphoneos/clang/arm64
+          # arm64, потому что подменяется App Store IPA, а он arm64
+          # даже на arm64e-устройствах (A14+). Для джейлбрейк-пути
+          # нужен arm64e — эти архитектуры нельзя смешивать.
+          clang \
+            -arch arm64 \
+            -isysroot "$SDK" \
+            -miphoneos-version-min=15.0 \
+            -fobjc-arc \
+            -Wall -Wextra \
+            -O2 \
+            -dynamiclib \
+            -framework Foundation \
+            -framework Security \
+            -framework UIKit \
+            -install_name "@executable_path/TikTokRegion.dylib" \
+            -o out/TikTokRegion.dylib \
+            Tweak/TikTokRegion.m
 
-      - name: Проверить архитектуру бинарника
+          test -f out/TikTokRegion.dylib || {
+            echo "::error::dylib не создан"; exit 1; }
+
+      - name: Проверить бинарник
         run: |
           set -euo pipefail
-          DYLIB=$(find Tweak/packages -name 'TikTokRegion.dylib' | head -1)
-          test -n "$DYLIB" || { echo "::error::dylib не найден"; exit 1; }
-          echo "Файл: $DYLIB"
+          DYLIB=out/TikTokRegion.dylib
           file "$DYLIB"
           lipo -info "$DYLIB"
           lipo -info "$DYLIB" | grep -q 'arm64' || {
-            echo "::error::ожидалась arm64"; exit 1; }
+            echo "::error::ожидалась архитектура arm64"; exit 1; }
+
           echo
-          echo "Экспортируемые символы (проверка, что модуль не пустой):"
-          nm -gU "$DYLIB" 2>/dev/null | head -20 || true
+          echo "install_name:"
+          otool -D "$DYLIB"
+          echo
+          echo "зависимости (должны быть только системные):"
+          otool -L "$DYLIB"
+          echo
+          echo "проверка на неожиданные зависимости:"
+          if otool -L "$DYLIB" | grep -Ei '/Users/|/opt/|@rpath' ; then
+            echo "::error::dylib тянет что-то извне iOS"
+            exit 1
+          fi
+          echo "внешних зависимостей нет"
+
+          echo
+          echo "символы, которые ищет приложение:"
+          nm -gU "$DYLIB" | grep -i constructor || echo "(конструктор не найден — проверь вручную)"
 
       - name: Отдать dylib
         uses: actions/upload-artifact@v4
         with:
           name: TikTokRegion-dylib-arm64
-          path: Tweak/packages/**/*.dylib
+          path: out/TikTokRegion.dylib
           retention-days: 90
           if-no-files-found: error
-
-      - name: Отдать deb (для jailbreak-устройств)
-        # На джейлбрейке ставится копированием dylib в /usr/lib/TweakInject,
-        # но .deb делает то же через dpkg — привычнее и с зависимостями.
-        uses: actions/upload-artifact@v4
-        with:
-          name: TikTokRegion-deb
-          path: Tweak/packages/*.deb
-          retention-days: 90
-          if-no-files-found: warn
 
       - name: Итог
         run: |
           {
             echo "### Dylib собран"
             echo
-            echo "Артефакты (раздел **Artifacts** внизу страницы запуска):"
+            echo "Артефакт **TikTokRegion-dylib-arm64** — в разделе **Artifacts**"
+            echo "внизу страницы запуска."
             echo
-            echo "| Артефакт | Куда ставить |"
-            echo "|---|---|"
-            echo "| \`TikTokRegion-dylib-arm64\` | \`/usr/lib/TweakInject/\` на джейлбрейке |"
-            echo "| \`TikTokRegion-deb\` | тот же результат, через dpkg |"
+            echo "Что дальше делать на устройстве:"
             echo
-            echo "### Что дальше делать на устройстве"
+            echo "1. Нужен **расшифрованный** \`TikTok.ipa\` — из App Store"
+            echo "   файл зашифрован, и insert_dylib его не возьмёт."
+            echo "2. Вставить библиотеку:"
             echo
-            echo "Сборка библиотеки — это последний шаг, который можно было"
-            echo "сделать без устройства. Дальше нужен телефон."
+            echo '```bash'
+            echo "insert_dylib -i TikTok.ipa -d TikTokRegion.dylib -m insert_dylib \\"
+            echo "             --target-version 16.0 --inplace"
+            echo '```'
+            echo
+            echo "3. Переподписать Sideloadly или AltStore — оба работают"
+            echo "   на Windows, подпись своим Apple ID."
+            echo "4. Поставить на телефон по USB."
           } >> "$GITHUB_STEP_SUMMARY"
