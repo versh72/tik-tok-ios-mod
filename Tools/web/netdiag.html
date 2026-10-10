@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Network Check — диагностика пути</title>
+<style>
+  :root{
+    --bg:#0f1115; --card:#171a21; --line:#262b36; --fg:#e6e9ef; --dim:#8b93a7;
+    --ok:#3ddc97; --bad:#ff5c5c; --skip:#5b6478; --warn:#ffb454;
+  }
+  @media (prefers-color-scheme: light){
+    :root{ --bg:#f6f7f9; --card:#fff; --line:#e2e5ea; --fg:#12151a; --dim:#5d6577; }
+  }
+  *{box-sizing:border-box}
+  body{ margin:0; padding:16px 14px 48px; background:var(--bg); color:var(--fg);
+        font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  h1{ font-size:19px; margin:0 0 4px }
+  .sub{ color:var(--dim); font-size:13px; margin:0 0 18px }
+  .box{ background:var(--card); border:1px solid var(--line); border-radius:12px;
+        padding:14px; margin-bottom:14px }
+  .box h2{ font-size:14px; margin:0 0 10px; text-transform:uppercase;
+           letter-spacing:.5px; color:var(--dim) }
+  input,button,select{ font:inherit; width:100%; padding:11px 12px; border-radius:9px;
+        border:1px solid var(--line); background:var(--bg); color:var(--fg); margin-bottom:9px }
+  button{ background:var(--fg); color:var(--bg); font-weight:600; border:none; cursor:pointer }
+  button:disabled{ opacity:.5 }
+  .row{ display:flex; gap:8px; align-items:center }
+  .row > *{ margin-bottom:9px }
+  .badge{ display:inline-block; width:10px; height:10px; border-radius:50%; flex:0 0 auto }
+  .ok{background:var(--ok)} .bad{background:var(--bad)} .skip{background:var(--skip)}
+  .run{background:var(--warn)}
+  .host{ font:13px ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-all }
+  .ms{ font:12px ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--dim) }
+  .msg{ font-size:13px; color:var(--dim); margin-top:3px }
+  ul{ list-style:none; padding:0; margin:0 }
+  li{ display:flex; gap:9px; padding:9px 0; border-bottom:1px solid var(--line) }
+  li:last-child{ border-bottom:none }
+  .note{ font-size:12px; color:var(--dim); line-height:1.45 }
+  .note strong{ color:var(--fg) }
+  .pill{ display:inline-block; font-size:11px; padding:2px 7px; border-radius:20px;
+         border:1px solid var(--line); color:var(--dim); margin-left:6px }
+  textarea{ width:100%; min-height:150px; font:11px ui-monospace,Menlo,monospace;
+            background:var(--bg); color:var(--fg); border:1px solid var(--line);
+            border-radius:9px; padding:10px }
+</style>
+</head>
+<body>
+
+<h1>Network Check</h1>
+<p class="sub">Диагностика сетевого пути с этого устройства</p>
+
+<div class="box">
+  <h2>Что это не делает</h2>
+  <div class="note">
+    <p><strong>Успешная проверка не означает, что TikTok заработает.</strong>
+    Она доказывает лишь, что один хост был достижим по этому пути в этот момент.</p>
+    <p><strong>Эта страница не видит трафик других приложений.</strong>
+    Она делает собственные запросы от вашего имени и ничего не перехватывает.</p>
+    <p><strong>Эта страница не определяет, включён ли VPN.</strong>
+    iOS не даёт обычному приложению такой информации. Судить по типу подключения —
+    значит гадать.</p>
+  </div>
+</div>
+
+<div class="box">
+  <h2>Цель</h2>
+  <input id="host" placeholder="api-va.tiktokv.com" autocapitalize="off" autocorrect="off" spellcheck="false">
+  <div class="row">
+    <button id="run">Проверить</button>
+    <button id="runSet" style="background:transparent;color:var(--fg);border:1px solid var(--line)">Набор TikTok</button>
+  </div>
+  <div class="msg" id="hint">Проверяет достижимость и время отклика. Не показывает разбивку по DNS / TCP / TLS — браузер её не отдаёт.</div>
+</div>
+
+<div class="box" id="out" hidden>
+  <h2>Результат</h2>
+  <ul id="results"></ul>
+</div>
+
+<div class="box" id="cmp" hidden>
+  <h2>Сравнение с прошлым прогоном</h2>
+  <ul id="deltas"></ul>
+</div>
+
+<div class="box">
+  <h2>Отчёт</h2>
+  <div class="row">
+    <button id="copy" style="background:transparent;color:var(--fg);border:1px solid var(--line)">Скопировать</button>
+    <button id="clear" style="background:transparent;color:var(--fg);border:1px solid var(--line)">Очистить историю</button>
+  </div>
+  <textarea id="report" readonly placeholder="Отчёт появится здесь после проверки"></textarea>
+</div>
+
+<script>
+"use strict";
+
+// Хосты отобраны по результатам DNS-резолвера.
+//
+// ВАЖНО: apex-имена вроде www.tiktokcdn.com и www.byteoversea.com при
+// проверке вернули ПУСТОЙ ответ, а не NXDOMAIN. Пустой ответ не доказывает,
+// что A-записи не существует — резолвер мог просто отбросить запрос. Поэтому
+// они исключены: держать их в списке означало бы постоянный ложный «сбой».
+// Это консервативное решение, а не установленный факт.
+const TIKTOK_SET = [
+  { host:"api-va.tiktokv.com",                  role:"API — лента" },
+  { host:"api16-normal-c-useast1a.tiktokv.com", role:"API — лента" },
+  { host:"sf16-va.tiktokcdn.com",               role:"CDN — видео" },
+  { host:"p16-sign-va.tiktokcdn.com",           role:"CDN — видео" },
+  { host:"log-va.tiktokv.com",                  role:"телеметрия" },
+  { host:"mon-va.tiktokv.com",                  role:"телеметрия" }
+];
+
+const CONTROL = { host:"www.cloudflare.com", role:"контроль" };
+
+const state = { prev: null };
+let lastResults = null;
+const KEY = "netdiag.web.v1";
+
+const esc = s => String(s).replace(/[&<>"]/g, c =>
+  ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
+
+/**
+ * Один запрос с замером.
+ *
+ * mode:'no-cors' — сознательный выбор: он даёт непрозрачный ответ, но
+ * РАЗРЕШАЕТ его только если соединение прошло (TCP + TLS успешны). Отказ —
+ * это сетевая ошибка. Обход CORS не обходит TLS и не ослабляет его.
+ */
+async function probe(host, timeoutMs = 9000) {
+  const url = "https://" + host + "/";
+  const t0 = performance.now();
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    await fetch(url, {
+      mode: "no-cors",
+      cache: "no-store",
+      referrerPolicy: "no-referrer",
+      signal: ac.signal
+    });
+    clearTimeout(timer);
+    return { host, ok:true, ms: Math.round(performance.now() - t0),
+             how:"открыт", role:"" };
+  } catch (e) {
+    clearTimeout(timer);
+    const ms = Math.round(performance.now() - t0);
+    const aborted = e && (e.name === "AbortError" || /abort/i.test(e.message||""));
+    return { host, ok:false, ms, aborted: !!aborted,
+             how: aborted ? "таймаут" : "не соединено", role:"" };
+  }
+}
+
+function runBatch(items) {
+  const btn = document.getElementById("run");
+  btn.disabled = true;
+  const list = document.getElementById("results");
+  list.innerHTML = "";
+  document.getElementById("out").hidden = false;
+
+  return (async () => {
+    const out = [];
+    for (const item of items) {
+      list.insertAdjacentHTML("beforeend",
+        `<li><span class="badge run"></span><div><div class="host">${esc(item.host)}</div>
+         <div class="ms">проверяется…</div></div></li>`);
+      const r = await probe(item.host);
+      r.role = item.role || "";
+      out.push(r);
+      const last = list.lastElementChild;
+      last.querySelector(".badge").className = "badge " + (r.ok ? "ok" : "bad");
+      last.querySelector(".ms").textContent =
+        (r.ok ? r.how + " · " + r.ms + " ms" : r.how + (r.ms ? " · " + r.ms + " ms" : ""))
+        + (r.role ? " · " + r.role : "");
+      await new Promise(r2 => setTimeout(r2, 120)); // не давить сеть
+    }
+    btn.disabled = false;
+    lastResults = out;
+    return out;
+  })();
+}
+
+function buildReport(results) {
+  const now = new Date().toISOString();
+  const ok = results.filter(r => r.ok).length;
+  const lines = [
+    "# Network check",
+    "",
+    "- Время: " + now,
+    "- Успешно: " + ok + " из " + results.length,
+    "- Направление: " + (navigator.onLine ? "есть" : "нет"),
+    "",
+    "Успешная проверка доказывает лишь то, что хост был достижим по этому пути",
+    "в этот момент. Она не означает, что достижим другой хост или конкретное",
+    "приложение. Эта страница не видит трафик других приложений.",
+    "",
+    "| Хост | Роль | Итог | мс |",
+    "|---|---|---|---|"
+  ];
+  for (const r of results) {
+    lines.push("| " + r.host + " | " + (r.role||"-") + " | " +
+      (r.ok ? "открыт" : r.how) + " | " + (r.ms||"-") + " |");
+  }
+  return lines.join("\n");
+}
+
+function compare(prev, cur) {
+  const box = document.getElementById("cmp");
+  const list = document.getElementById("deltas");
+  const before = {};
+  for (const r of prev) before[r.host] = r;
+  const rows = [];
+
+  for (const r of cur) {
+    const b = before[r.host];
+    if (!b) continue;
+    if (b.ok === r.ok) continue;
+    const dir = r.ok ? "заработал" : "сломался";
+    rows.push(`<li><span class="badge ${r.ok?"ok":"bad"}"></span><div>
+      <div class="host">${esc(r.host)}</div>
+      <div class="ms">${esc(dir)} · ${b.ok?"открыт":esc(b.how)} → ${r.ok?"открыт":esc(r.how)}</div>
+      </div></li>`);
+  }
+
+  if (!rows.length) {
+    box.hidden = false;
+    list.innerHTML = `<li><span class="badge skip"></span><div>
+      <div class="ms">Ни один хост не изменил доступность.</div></div></li>`;
+    return;
+  }
+  box.hidden = false;
+  list.innerHTML = rows.join("");
+}
+
+function persist(results) {
+  try {
+    const prev = localStorage.getItem(KEY);
+    state.prev = prev ? JSON.parse(prev) : null;
+    localStorage.setItem(KEY, JSON.stringify(results));
+  } catch (_) { /* приватный режим — просто без сравнения */ }
+}
+
+function finish() {
+  if (!lastResults) return;
+  document.getElementById("report").value = buildReport(lastResults);
+  if (state.prev) compare(state.prev, lastResults);
+}
+
+document.getElementById("run").addEventListener("click", async () => {
+  const h = document.getElementById("host").value.trim();
+  if (!h) return;
+  await runBatch([{ host: h, role: "" }]);
+  persist(lastResults);
+  finish();
+});
+
+document.getElementById("runSet").addEventListener("click", async () => {
+  await runBatch([CONTROL].concat(TIKTOK_SET));
+  persist(lastResults);
+  finish();
+});
+
+document.getElementById("clear").addEventListener("click", () => {
+  localStorage.removeItem(KEY);
+  document.getElementById("report").value = "";
+  document.getElementById("cmp").hidden = true;
+  document.getElementById("out").hidden = true;
+});
+
+function flash(text) {
+  const b = document.getElementById("copy");
+  const old = b.textContent;
+  b.textContent = text;
+  setTimeout(() => { b.textContent = old; }, 1400);
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,55 @@
+name: TikTokNetDiag
+
+options:
+  bundleIdPrefix: app.netdiag
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: false
+
+packages:
+  NetDiag:
+    path: NetDiag
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    # No paid-account entitlements are requested anywhere in this project.
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+
+targets:
+  TikTokNetDiag:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+    dependencies:
+      - package: NetDiag
+        product: NetDiagUI
+      - package: NetDiag
+        product: NetDiagEngine
+      - package: NetDiag
+        product: NetDiagCore
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: NetDiag
+        UILaunchScreen: {}
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.netdiag.ios
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: NO
+
+schemes:
+  TikTokNetDiag:
+    build:
+      targets:
+        TikTokNetDiag: all
+    run:
+      config: Debug
+    archive:
+      config: Release
