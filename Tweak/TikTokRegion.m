@@ -492,10 +492,10 @@ static NSString *gCurrentRequestPath = nil;
 
         // mobileprovision отсутствует у переподписанной сборки. TikTok это видит.
         TTHook([NSBundle class], NSSelectorFromString(@"pathForResource:ofType:"),
-               imp_implementationWithBlock(^(id _self, SEL _cmd, NSString *name, NSString *ext) {
+               imp_implementationWithBlock(^NSString *(id _self, SEL _cmd, NSString *name, NSString *ext) {
             if ([name isEqualToString:@"mobileprovision"]) return nil;
             IMP original = [gOriginalIMP[[NSValue valueWithPointer:(void *)_cmd]] pointerValue];
-            return ((id (*)(id, SEL, id, id))original)(_self, (SEL)_cmd, name, ext);
+            return ((NSString *(*)(id, SEL, NSString *, NSString *))original)(_self, _cmd, name, ext);
         }));
 
         // Канал установки
